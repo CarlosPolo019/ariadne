@@ -1,5 +1,6 @@
 // src/shared/icons.js
 const ICONS = {
+  check: `<path d="m5 12 4 4L19 6" />`,
   search: `<path d="m21 21-4.34-4.34" />
   <circle cx="11" cy="11" r="8" />`,
   calendar: `<path d="M8 2v3" />

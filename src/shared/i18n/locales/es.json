@@ -92,9 +92,9 @@
   "banner.stopButton": "Detener",
   "banner.recordingInfo": "Se está grabando la reunión. Puedes detener la captura en cualquier momento.",
   "banner.errorCopy": "No se pudo iniciar",
-  "banner.finishedTitle": "Captura finalizada",
-  "banner.finishedCopy": "La reunión se guardó correctamente.",
-  "banner.viewRecording": "Ver grabación",
+  "banner.finishedTitle": "Grabación lista",
+  "banner.finishedCopy": "Puedes consultar la grabación en el historial.",
+  "banner.viewRecording": "Ver en historial",
   "banner.dismissAria": "Cerrar",
   "history.incompleteRecording": "Grabación incompleta",
   "transcript.preparing": "Preparando",
@@ -122,5 +122,14 @@
   "settings.saved": "Guardado",
   "settings.loadError": "No se pudo cargar este ajuste. Inténtalo de nuevo.",
   "settings.saveError": "No se pudo guardar el cambio. Se restauró el valor anterior.",
-  "settings.retry": "Reintentar"
+  "settings.retry": "Reintentar",
+  "banner.savingTitle": "Guardando grabación",
+  "banner.savingCopy": "Estamos guardando los datos de la reunión.",
+  "banner.processingTitle": "Procesando grabación",
+  "banner.processingCopy": "Estamos preparando los archivos de tu reunión.",
+  "banner.captureErrorTitle": "La grabación necesita atención",
+  "banner.captureErrorCopy": "Revisa su estado y las opciones de recuperación en el historial.",
+  "banner.openHistoryError": "No pudimos abrir el historial. Inténtalo de nuevo.",
+  "history.linkedMeetingWaiting": "Esperando la grabación solicitada…",
+  "history.linkedMeetingNotFound": "La grabación solicitada aún no está disponible en el historial."
 }

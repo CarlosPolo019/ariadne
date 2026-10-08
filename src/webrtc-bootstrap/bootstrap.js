@@ -156,11 +156,12 @@ if (!window.__ariadneCaptureInstalled) {
           log: rtcPatchLog,
         });
       } catch (error) {
+        if (request !== startRequest) return;
         health.stop(); remoteAudioMonitor.stop(); htmlObserver.stop();
         await captions.stop();
         session = null;
         rtcPatchLog("capture-start-error", { message: error.message });
-        postToIsolated({ type: "asterion:start-failed", reason: error.message });
+        postToIsolated({ type: "asterion:start-failed", sessionId: message.sessionId, reason: error.message });
       } finally { if (request === startRequest) starting = false; }
     } else if (message.type === "asterion:caption-storage") {
       if (session?.sessionId === message.sessionId) captions.storage = message;
@@ -192,7 +193,9 @@ if (!window.__ariadneCaptureInstalled) {
       // MainWorldSession publishes session-ended.
       if (session) postToIsolated({ type: "asterion:caption-cutoff", sessionId: session.sessionId, endedAt });
       await captions.stop();
-      await session?.stop({ interruptionReason: message.interruptionReason, endedAt });
+      if (session) await session.stop({ interruptionReason: message.interruptionReason, endedAt });
+      else if (message.sessionId) postToIsolated({ type: "asterion:session-ended", sessionId: message.sessionId,
+        endedAt, expectedSequences: {}, interruptionReason: message.interruptionReason ?? "capture-start-cancelled" });
       session = null;
       remoteAudioMonitor.stop();
       htmlObserver.stop();

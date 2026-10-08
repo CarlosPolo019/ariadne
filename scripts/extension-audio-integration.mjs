@@ -186,6 +186,58 @@ export async function runExtensionIntegration({ root, debuggerUrl, origin, resta
     const prefixDuration = await page.evaluate(`(async()=>{const ctx=new AudioContext();const bytes=Uint8Array.from(atob(${JSON.stringify(prefix)}),c=>c.charCodeAt(0));const decoded=await ctx.decodeAudioData(bytes.buffer);const duration=decoded.duration;await ctx.close();return duration;})()`);
     assert(prefixDuration>1.5, 'The continuous durable prefix remains decodable after definitive failure');
     console.log(JSON.stringify({storageFailure:{ok:true,recordingStatus:incomplete.recordingStatus,committedChunks:incompleteManifest.committedChunks,prefixDuration}},null,2));
+    // Exercise the real content script/widget through same-URL departure and reentry.
+    await page.evaluate('chrome.runtime.sendMessage=window.__deliveryOriginal', isolated.id);
+    await worker.evaluate('chrome.storage.local.set({autoStart:false})');
+    const widget = `document.getElementById('asterion-banner-host').shadowRoot`;
+    const noticeVisible = `!${widget}.getElementById('content').hidden && !${widget}.querySelector('.finished').hidden`;
+    await page.evaluate(`document.querySelector('i').hidden=true`);
+    await wait(100);
+    const exitingNotice = await page.evaluate(`({hidden:${widget}.getElementById('content').hidden,inert:${widget}.getElementById('content').hasAttribute('inert'),animations:${widget}.getElementById('content').getAnimations({subtree:true}).length})`);
+    assert(!exitingNotice.hidden && exitingNotice.inert && exitingNotice.animations>0,'A departure has an inert intermediate animation before display:none');
+    await wait(200);
+    assert(await page.evaluate(`${widget}.getElementById('content').hidden`), 'A manual-stop notice hides after its exit');
+    const rejected = await worker.evaluate(`chrome.tabs.sendMessage(${tabId},{type:'asterion:popup-start'})`);
+    assert(rejected.ok === false, 'The real popup transport rejects capture outside the meeting');
+    await page.evaluate(`document.querySelector('i').hidden=false`);
+    await wait(100);
+    assert(await page.evaluate(`!${widget}.getElementById('content').hidden && !${widget}.querySelector('#start-capture').disabled`),
+      'Reentry restores manual start even after a failed previous capture');
+    await page.evaluate(`${widget}.querySelector('#start-capture').click()`);
+    let lifecycleStatus;
+    for (let attempt=0;attempt<100;attempt++) {
+      lifecycleStatus=await worker.evaluate(`chrome.tabs.sendMessage(${tabId},{type:'asterion:get-status'})`);
+      if (lifecycleStatus.state==='recording') break;
+      await wait(100);
+    }
+    assert(lifecycleStatus.state==='recording','The real banner starts another recording after reentry');
+    await wait(2200);
+    await page.evaluate(`document.querySelector('i').hidden=true`);
+    await wait(100);
+    assert(await page.evaluate(noticeVisible), 'Departure during capture keeps the completion notice');
+    assert(await page.evaluate(`${widget}.querySelector('#start-capture').disabled`), 'The departure notice has no usable start control');
+    const lifecycleScreenshot = await page.command('Page.captureScreenshot',{format:'png'});
+    await writeFile(join(tmpdir(),'ariadne-meeting-completion.png'),Buffer.from(lifecycleScreenshot.data,'base64'));
+    await page.evaluate(`${widget}.querySelector('#view-recording').click()`);
+    const linkedTarget = await find(target => target.url.includes('/src/history/history.html?sessionId='+lifecycleStatus.sessionId));
+    const linkedPage = await connect(linkedTarget.webSocketDebuggerUrl); clients.push(linkedPage);
+    let linkedSelected;
+    for (let attempt=0;attempt<100;attempt++) {
+      linkedSelected=await linkedPage.evaluate(`document.querySelector('.meeting-card.is-selected')?.dataset.meetingId`);
+      if (linkedSelected===lifecycleStatus.sessionId) break;
+      await wait(100);
+    }
+    assert(linkedSelected===lifecycleStatus.sessionId,'The real history page selects the linked session after publication');
+    await wait(200);
+    assert(await page.evaluate(`${widget}.getElementById('content').hidden`),'Opening history dismisses the departure notice');
+    await page.evaluate(`document.querySelector('i').hidden=false`);
+    await wait(100);
+    assert(await page.evaluate(`!${widget}.querySelector('#start-capture').disabled`),'Reentry restores capture after opening history');
+    await page.evaluate(`document.querySelector('i').hidden=true`);
+    await wait(200);
+    assert(await page.evaluate(`${widget}.getElementById('content').hidden`),'Leaving again without capture shows no old notice');
+    console.log(JSON.stringify({meetingLifecycle:{ok:true,sessionId:lifecycleStatus.sessionId,
+      checks:['manual stop then departure','late popup start rejected','same-URL reentry','capture ended by departure','linked history selection','notice dismissal']}},null,2));
     if (restartBrowser) {
       const videoCapture=await page.evaluate(`(async()=>{
         const canvas=document.createElement('canvas');canvas.width=64;canvas.height=64;

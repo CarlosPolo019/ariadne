@@ -15,6 +15,8 @@ const resultsCountEl = document.getElementById("results-count");
 const sortSelect = document.getElementById("sort-select");
 const meetingsListEl = document.getElementById("meetings-list");
 const detailPanelEl = document.getElementById("detail-panel");
+let linkedSessionId = new URLSearchParams(location.search).get("sessionId");
+let linkedSessionStatus = "waiting";
 let detailSession = null;
 let nextDetailId = 0;
 let detailShell, meetingRegion, meetingFooter, deleteMeetingButton, meetingAnimation;
@@ -205,6 +207,7 @@ document.addEventListener("click", event => {
   if (openMoreMenu && !openMoreMenu.menu.contains(event.target) && event.target !== openMoreMenu.button) closeOpenMoreMenu();
 });
 function openMeetingDetail(meeting, tab, event) {
+  linkedSessionId = null; // A user selection takes precedence over a pending link.
   if (state.selectedMeetingId !== meetingId(meeting)) state.selectedTab = null;
   state.selectedMeetingId = meetingId(meeting);
   if (tab) state.selectedTab = tab;
@@ -606,7 +609,10 @@ function renderDetail(animate = false) {
   closeDetailSession(); meetingRegion.replaceChildren(); meetingFooter.hidden = !meeting;
   detailShell.classList.toggle("has-meeting", Boolean(meeting));
   if (!meeting) {
-    const placeholder = document.createElement("p"); placeholder.className = "detail-placeholder"; placeholder.textContent = t("history.selectMeetingPlaceholder"); meetingRegion.appendChild(placeholder); return;
+    const placeholder = document.createElement("p"); placeholder.className = "detail-placeholder"; placeholder.textContent = t(linkedSessionId
+      ? linkedSessionStatus === "waiting" ? "history.linkedMeetingWaiting" : "history.linkedMeetingNotFound"
+      : "history.selectMeetingPlaceholder");
+    placeholder.setAttribute("role", "status"); meetingRegion.appendChild(placeholder); return;
   }
   const header = document.createElement("header"); header.className = "detail-header";
   const title = document.createElement("h2"); title.className = "detail-title";
@@ -682,9 +688,37 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   const selected = state.meetings.find(meeting => meetingId(meeting) === state.selectedMeetingId);
   if (state.selectedMeetingId && !selected) state.selectedMeetingId = null;
   renderAllExceptDetail();
-  renderDetail();
+  if (!selectLinkedMeeting()) renderDetail();
 });
-chrome.storage.local.get({ meetingHistory: [] }, ({ meetingHistory }) => { state.meetings = Array.isArray(meetingHistory) ? meetingHistory : []; renderAllExceptDetail(); renderDetail(); });
 
-// Reconciliation also discovers interrupted sessions missing from meetingHistory.
-try { chrome.runtime.sendMessage({ type: "asterion:recover-storage" }).catch(() => {}); } catch {}
+function selectLinkedMeeting() {
+  if (!linkedSessionId) return false;
+  const meeting = state.meetings.find(item => item.sessionId === linkedSessionId);
+  if (!meeting) return false;
+  openMeetingDetail(meeting);
+  const card = [...meetingsListEl.querySelectorAll(".meeting-card")]
+    .find(card => card.dataset.meetingId === meetingId(meeting));
+  if (card) {
+    card.tabIndex = -1;
+    card.scrollIntoView?.({ block: "nearest" });
+    card.focus({ preventScroll: true });
+  }
+  return true;
+}
+
+chrome.storage.local.get({ meetingHistory: [] }, ({ meetingHistory }) => {
+  state.meetings = Array.isArray(meetingHistory) ? meetingHistory : [];
+  renderAllExceptDetail();
+  if (!selectLinkedMeeting()) renderDetail();
+});
+
+// Keep the requested ID after reconciliation so delayed publication can select it.
+// A missing recording never selects an unrelated one.
+async function reconcileHistory() {
+  try { await chrome.runtime.sendMessage({ type: "asterion:recover-storage" }); } catch {}
+  if (linkedSessionId) {
+    linkedSessionStatus = "not-found";
+    if (!selectLinkedMeeting()) renderDetail();
+  }
+}
+void reconcileHistory();

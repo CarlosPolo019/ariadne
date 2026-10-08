@@ -268,3 +268,28 @@ it("does not let discovery overwrite newer finalized processing metadata", async
   await recoverPendingSessions();
   expect(chrome.storage.__store.meetingHistory).toEqual([newer]);
 });
+
+
+describe("open history from a content script", () => {
+  beforeEach(() => { vi.resetModules(); globalThis.chrome = baseChromeMock(); });
+
+  async function openHistory(sessionId) {
+    const listeners = [];
+    chrome.runtime.onMessage.addListener = callback => listeners.push(callback);
+    await import("./service-worker.js");
+    return new Promise(resolve => {
+      for (const listener of listeners) listener({ type: "asterion:open-history", sessionId }, { tab: { id: 42 } }, resolve);
+    });
+  }
+
+  it("opens an extension-owned URL with the requested ID encoded", async () => {
+    chrome.tabs.create = vi.fn(async () => ({ id: 7 }));
+    expect(await openHistory("session &1")).toEqual({ ok: true, tabId: 7 });
+    expect(chrome.tabs.create).toHaveBeenCalledWith({ url: "src/history/history.html?sessionId=session+%261" });
+  });
+
+  it("reports a failed tab opening without claiming success", async () => {
+    chrome.tabs.create = vi.fn(async () => { throw new Error("Tab opening failed"); });
+    expect(await openHistory("session-1")).toEqual({ ok: false, error: "Tab opening failed" });
+  });
+});

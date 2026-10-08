@@ -92,9 +92,9 @@
   "banner.stopButton": "Arrêter",
   "banner.recordingInfo": "La réunion est en cours d'enregistrement. Vous pouvez arrêter la capture à tout moment.",
   "banner.errorCopy": "Impossible de démarrer",
-  "banner.finishedTitle": "Capture terminée",
-  "banner.finishedCopy": "La réunion a été enregistrée avec succès.",
-  "banner.viewRecording": "Voir l'enregistrement",
+  "banner.finishedTitle": "Enregistrement prêt",
+  "banner.finishedCopy": "Vous pouvez consulter l’enregistrement dans l’historique.",
+  "banner.viewRecording": "Voir dans l’historique",
   "banner.dismissAria": "Fermer",
   "history.incompleteRecording": "Enregistrement incomplet",
   "transcript.preparing": "Préparation",
@@ -122,5 +122,14 @@
   "settings.saved": "Enregistré",
   "settings.loadError": "Impossible de charger ce réglage. Réessayez.",
   "settings.saveError": "Impossible d’enregistrer la modification. La valeur précédente a été rétablie.",
-  "settings.retry": "Réessayer"
+  "settings.retry": "Réessayer",
+  "banner.savingTitle": "Enregistrement en cours de sauvegarde",
+  "banner.savingCopy": "Nous sauvegardons les données de la réunion.",
+  "banner.processingTitle": "Traitement de l’enregistrement",
+  "banner.processingCopy": "Nous préparons les fichiers de votre réunion.",
+  "banner.captureErrorTitle": "L’enregistrement nécessite votre attention",
+  "banner.captureErrorCopy": "Consultez son état et les options de récupération dans l’historique.",
+  "banner.openHistoryError": "Impossible d’ouvrir l’historique. Réessayez.",
+  "history.linkedMeetingWaiting": "En attente de l’enregistrement demandé…",
+  "history.linkedMeetingNotFound": "L’enregistrement demandé n’est pas encore disponible dans l’historique."
 }

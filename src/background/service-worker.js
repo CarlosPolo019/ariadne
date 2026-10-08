@@ -128,6 +128,14 @@ async function discardSession({ sessionId, folderName }) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target === "asterion-offscreen") return;
+  if (message.type === "asterion:open-history") {
+    const query = typeof message.sessionId === "string" && message.sessionId
+      ? `?${new URLSearchParams({ sessionId: message.sessionId })}` : "";
+    chrome.tabs.create({ url: chrome.runtime.getURL(`src/history/history.html${query}`) })
+      .then(tab => sendResponse({ ok: true, tabId: tab.id }))
+      .catch(error => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
   if (STORAGE_TYPES.has(message.type)) {
     (async () => {
       if (message.type === "asterion:session-starting") await registerActiveSession(message.sessionId, sender.tab?.id ?? null, message.meetingTitle);
