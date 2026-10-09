@@ -15,7 +15,7 @@ beforeEach(() => {
   runtime.load.mockResolvedValue(true); runtime.write.mockResolvedValue(); runtime.exec.mockResolvedValue(0); runtime.read.mockResolvedValue(new Uint8Array([9]));
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
-describe("conversion recovery and deadlines", () => {
+describe("conversion recovery without duration limits", () => {
   it("uses default encoding and copies inputs before transfer for later remuxing", async () => {
     const { runFfmpegJob } = await import("./ffmpeg-client.js");
     runtime.write.mockImplementation(async (name, bytes) => { if (name.endsWith("webm")) structuredClone(bytes, { transfer: [bytes.buffer] }); });
@@ -39,14 +39,15 @@ describe("conversion recovery and deadlines", () => {
     await vi.runAllTimersAsync(); await failed;
     expect(runtime.exec).toHaveBeenCalledTimes(10); expect(runtime.terminate).toHaveBeenCalledTimes(10);
   });
-  it.each([["load", 180000], ["write", 120000], ["exec", 1200000], ["read", 120000]])("terminates timed-out %s workers and recreates them before retrying", async (operation, limit) => {
+  it.each(["load", "write", "exec", "read"])("lets slow %s operations finish without a deadline or retry", async operation => {
     const { runFfmpegJob } = await import("./ffmpeg-client.js");
-    runtime[operation].mockImplementationOnce(() => new Promise(() => {}));
+    let release;
+    runtime[operation].mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
     const converted = runFfmpegJob(job);
-    await vi.advanceTimersByTimeAsync(limit - 1); expect(runtime.terminate).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1); expect(runtime.terminate).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(181000); expect(await converted).toEqual(new Uint8Array([9]));
-    expect(runtime.terminate).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(4 * 3600000);
+    expect(runtime.terminate).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
+    release(operation === "read" ? new Uint8Array([9]) : operation === "exec" ? 0 : undefined);
+    expect(await converted).toEqual(new Uint8Array([9])); expect(runtime.load).toHaveBeenCalledOnce(); expect(runtime.terminate).toHaveBeenCalledOnce();
   });
   it("does not retry invalid inputs or missing runtime assets and allows a subsequent queued job", async () => {
     const { runFfmpegJob } = await import("./ffmpeg-client.js");
@@ -65,17 +66,21 @@ describe("conversion recovery and deadlines", () => {
     expect(runtime.terminate).toHaveBeenCalledTimes(2);
   });
 
-  it("enforces the whole-attempt watchdog before individually valid long operations complete", async () => {
-    const { runFfmpegJob } = await import("./ffmpeg-client.js");
-    const slow = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    runtime.load.mockImplementationOnce(() => slow(170000));
-    for (let index = 0; index < 7; index++) runtime.write.mockImplementationOnce(() => slow(110000));
-    runtime.exec.mockImplementationOnce(() => new Promise(() => {}));
-    const converted = runFfmpegJob({ ...job, inputs: Array.from({ length: 6 }, () => new Uint8Array([1])) });
-    await vi.advanceTimersByTimeAsync(1679999); expect(runtime.terminate).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1); expect(runtime.terminate).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(181000); expect(await converted).toEqual(new Uint8Array([9]));
+  it.each(["load", "write", "exec", "read"])("explicitly cancels a pending %s operation and allows the next queued job", async operation => {
+    const { runFfmpegAttempt } = await import("./ffmpeg-client.js");
+    const controller = new AbortController();
+    runtime[operation].mockImplementationOnce(() => new Promise(() => {}));
+    const converted = runFfmpegAttempt({ ...job, signal: controller.signal });
+    const cancelled = expect(converted).rejects.toMatchObject({ name: "AbortError", message: "Conversion cancelled" });
+    await vi.advanceTimersByTimeAsync(0); controller.abort(); await cancelled;
+    expect(runtime.terminate).toHaveBeenCalledOnce();
+    expect(await runFfmpegAttempt(job)).toEqual(new Uint8Array([9]));
     expect(runtime.terminate).toHaveBeenCalledTimes(2);
   });
-
+  it("does not allocate a worker for an already cancelled job", async () => {
+    const { runFfmpegAttempt } = await import("./ffmpeg-client.js");
+    const controller = new AbortController(); controller.abort();
+    await expect(runFfmpegAttempt({ ...job, signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+    expect(runtime.load).not.toHaveBeenCalled();
+  });
 });

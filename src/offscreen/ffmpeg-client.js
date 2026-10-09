@@ -5,15 +5,6 @@ let queueTail = Promise.resolve();
 let jobCounter = 0;
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function timed(operation, ms, label) {
-  let timer;
-  try {
-    return await Promise.race([operation, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`${label}_TIMEOUT`)), ms);
-    })]);
-  } finally { clearTimeout(timer); }
-}
-
 export function runFfmpegJob(job) {
   return runWithRetries(job);
 }
@@ -40,7 +31,7 @@ export function runFfmpegAttempt(job) {
 }
 
 async function runAttempt({ signal, inputBytes, inputs = inputBytes ? [inputBytes] : [], inputExt, outputExt, args = [], normalizeAvStreams = false, onProgress }) {
-  if (signal?.aborted) throw new Error("JOB_TIMEOUT");
+  if (signal?.aborted) throw new DOMException("Conversion cancelled", "AbortError");
   if (!inputs.length || inputs.some((input) => !input?.byteLength)) throw new Error("INPUT_INVALID");
   const id = ++jobCounter;
   const ffmpeg = new FFmpeg();
@@ -49,19 +40,18 @@ async function runAttempt({ signal, inputBytes, inputs = inputBytes ? [inputByte
   const list = `segments_${id}.txt`;
   const process = async () => {
     try {
-      await timed(ffmpeg.load({
+      await ffmpeg.load({
         classWorkerURL: chrome.runtime.getURL("dist/ffmpeg/ffmpeg-worker.js"),
         coreURL: chrome.runtime.getURL("dist/ffmpeg/ffmpeg-core.js"),
         wasmURL: chrome.runtime.getURL("dist/ffmpeg/ffmpeg-core.wasm"),
-      }), 180000, "LOAD");
+      });
     } catch (error) {
       const message = String(error?.message ?? error);
-      if (message.includes("TIMEOUT")) throw error;
       throw new Error(`ASSET_UNAVAILABLE: ${message}`);
     }
     ffmpeg.on("log", ({ message }) => debugEvent("conversion-core", { jobId: id, message }));
     ffmpeg.on("progress", ({ time }) => onProgress?.(time / 1000));
-    for (let index = 0; index < files.length; index++) await timed(ffmpeg.writeFile(files[index], inputs[index].slice()), 120000, "WRITE");
+    for (let index = 0; index < files.length; index++) await ffmpeg.writeFile(files[index], inputs[index].slice());
     let orderedFiles = files;
     if (normalizeAvStreams && files.length > 1) {
       // Recorder generations can emit audio and video in a different stream
@@ -69,31 +59,30 @@ async function runAttempt({ signal, inputBytes, inputs = inputBytes ? [inputByte
       orderedFiles = [];
       for (let index = 0; index < files.length; index++) {
         const normalized = `ordered_${id}_${index}.${inputExt}`;
-        const code = await timed(ffmpeg.exec(["-i", files[index], "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", normalized]), 1200000, "RUN");
+        const code = await ffmpeg.exec(["-i", files[index], "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy", normalized]);
         if (code !== undefined && code !== 0) throw new Error(`FFmpeg exited ${code}`);
         orderedFiles.push(normalized);
       }
     }
     let inputArgs = ["-i", orderedFiles[0]];
     if (files.length > 1) {
-      await timed(ffmpeg.writeFile(list, new TextEncoder().encode(orderedFiles.map((file) => `file '${file}'`).join("\n"))), 120000, "WRITE");
+      await ffmpeg.writeFile(list, new TextEncoder().encode(orderedFiles.map((file) => `file '${file}'`).join("\n")));
       inputArgs = ["-f", "concat", "-safe", "0", "-i", list];
     }
-    const exitCode = await timed(ffmpeg.exec([...inputArgs, ...args, output]), 1200000, "RUN");
+    const exitCode = await ffmpeg.exec([...inputArgs, ...args, output]);
     if (exitCode !== undefined && exitCode !== 0) throw new Error(`FFmpeg exited ${exitCode}`);
-    const result = await timed(ffmpeg.readFile(output), 120000, "READ");
+    const result = await ffmpeg.readFile(output);
     if (!result?.byteLength) throw new Error("Empty conversion output");
     return result;
   };
   let rejectAborted;
   const aborted = new Promise((_, reject) => { rejectAborted = reject; });
-  const onAbort = () => { ffmpeg.terminate?.(); rejectAborted(new Error("JOB_TIMEOUT")); };
+  const onAbort = () => { rejectAborted(new DOMException("Conversion cancelled", "AbortError")); };
   signal?.addEventListener("abort", onAbort, { once: true });
-  try { return await timed(Promise.race([process(), aborted]), 1680000, "JOB"); }
+  try { return await Promise.race([process(), aborted]); }
   finally {
     signal?.removeEventListener("abort", onAbort);
-    // terminate rejects pending worker operations; a timed-out attempt can
-    // neither publish output nor overlap the next job on the same runtime.
+    // Release the worker on completion, real failure or explicit cancellation.
     ffmpeg.terminate?.();
   }
 }
