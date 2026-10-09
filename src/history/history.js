@@ -307,6 +307,7 @@ async function readActiveFile(meeting, tab) {
   } catch { return { file: await (await directory.getFileHandle(fallback)).getFile(), name: fallback }; }
 }
 function closeDownloadMenus() {
+  detailSession?.transcriptActions?.close(false, true);
   for (const page of detailSession?.pages.values() ?? []) page.footer?.downloadButton?.close(false, true);
 }
 function refreshDownloadFooters() {
@@ -390,7 +391,9 @@ function closeDetailSession() {
   clearTimeout(recoveryPoll);
   if (!detailSession) return;
   meetingAnimation?.cancel();
+  clearTimeout(detailSession.copyFeedbackTimer);
   detailSession.closed = true;
+  detailSession.transcriptActions?.destroy();
   for (const page of detailSession.pages.values()) disposePage(page);
   detailSession = null;
 }
@@ -541,13 +544,94 @@ function fileRevision(meeting, key) {
   if (key === "transcript") return `${meeting.hasTranscript}:${meeting.transcriptExportStatus}`;
   return JSON.stringify([meeting.transcriptExportStatus, meeting.audioConversionStatus, meeting.videoConversionStatus, meeting.recordingStatus]);
 }
+// The reader is shared with the transcript panel, independently of the selected tab.
+function readSessionTranscript(session) {
+  const revision = `${session.meeting.folderName}:${fileRevision(session.meeting, "transcript")}`;
+  if (session.transcriptRevision !== revision) {
+    session.transcriptRevision = revision;
+    session.transcriptRead = readActiveFile(session.meeting, "transcript").then(file => {
+      if (!Array.isArray(file.value) || !file.value.every(segment => typeof segment.text === "string" && typeof segment.speaker === "string" && Number.isFinite(segment.startTime))) {
+        throw new Error("Invalid transcript");
+      }
+      return file;
+    });
+  }
+  return session.transcriptRead;
+}
+// Keep the integration unavailable until a transcript transfer method is defined.
+const TRANSCRIPT_AI_ENABLED = false;
+const aiProviders = { chatgpt: "https://chatgpt.com/", claude: "https://claude.ai/new", grok: "https://grok.com/" };
+export function transcriptAiUrl(provider, text) {
+  if (!Object.hasOwn(aiProviders, provider)) throw new Error("Unknown provider");
+  const url = new URL(aiProviders[provider]);
+  url.searchParams.set("q", text);
+  return url.href;
+}
+function createTranscriptActions(session, navigation) {
+  const container = document.createElement("div"); container.className = "transcript-actions";
+  const status = document.createElement("span"); status.className = "transcript-action-status";
+  status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite"); status.setAttribute("aria-atomic", "true");
+  const resetCopyFeedback = () => {
+    clearTimeout(session.copyFeedbackTimer);
+    session.transcriptActions.setIconHtml(icon("copy", { size: 12, color: "currentColor" }));
+    session.transcriptActions.element.querySelector(".split-primary").removeAttribute("aria-label");
+  };
+  session.resetCopyFeedback = resetCopyFeedback;
+  const action = async provider => {
+    const revision = session.actionsRevision;
+    if (!session.transcriptFile || session.closed) return;
+    const text = transcriptToMarkdown(session.transcriptFile.value, titleFor(session.meeting));
+    const current = () => !session.closed && session.actionsRevision === revision;
+    resetCopyFeedback();
+    session.transcriptActions.setDisabled(true); status.textContent = "";
+    try {
+      if (provider) await chrome.tabs.create({ url: transcriptAiUrl(provider, text), active: true });
+      else await navigator.clipboard.writeText(text);
+      if (current() && !provider) {
+        session.transcriptActions.setIconHtml(icon("check", { size: 12, color: "var(--accent-green)" }));
+        session.transcriptActions.element.querySelector(".split-primary").setAttribute("aria-label", t("history.transcriptCopied"));
+        session.copyFeedbackTimer = setTimeout(resetCopyFeedback, 2000);
+      }
+    } catch {
+      if (current()) status.textContent = t(provider ? "history.aiOpenError" : "history.transcriptCopyError");
+    } finally {
+      if (current()) session.transcriptActions.setDisabled(false);
+    }
+  };
+  session.transcriptActions = createSplitButton({
+    label: t("history.copyTranscript"), iconHtml: icon("copy", { size: 12, color: "currentColor" }),
+    menuLabel: t("history.openWithAi"), optionType: "action", placement: "below",
+    options: [["chatgpt", "ChatGPT"], ["claude", "Claude"], ["grok", "Grok"]].map(([value, provider]) => ({ value, label: t("history.openInAi", { provider }) })),
+    onAction: () => action(), onSelect: action, onOpen: () => closeOpenMoreMenu(false, true),
+  });
+  session.transcriptActions.setDisabled(true);
+  container.append(session.transcriptActions.element, status); navigation.appendChild(container);
+  session.actionsContainer = container; session.actionsStatus = status;
+}
+function updateTranscriptActions(session) {
+  if (!session.transcriptActions) return;
+  const revision = `${session.meeting.hasTranscript}:${session.meeting.folderName}:${fileRevision(session.meeting, "transcript")}`;
+  if (session.actionsRevision === revision) return;
+  session.resetCopyFeedback();
+  session.actionsRevision = revision; session.transcriptFile = null;
+  session.transcriptActions.close(false, true); session.transcriptActions.setDisabled(true);
+  session.actionsContainer.hidden = !session.meeting.hasTranscript;
+  session.actionsStatus.textContent = session.meeting.hasTranscript ? t("history.preparingTranscript") : "";
+  if (!session.meeting.hasTranscript) { session.transcriptRevision = null; session.transcriptRead = null; return; }
+  readSessionTranscript(session).then(file => {
+    if (session.closed || session.actionsRevision !== revision) return;
+    session.transcriptFile = file; session.actionsStatus.textContent = ""; session.transcriptActions.setDisabled(false);
+  }, () => {
+    if (!session.closed && session.actionsRevision === revision) session.actionsStatus.textContent = t("history.transcriptReadError");
+  });
+}
 function loadPage(session, page) {
   if (page.pending || (page.file && !page.dirty)) return page.pending;
   if (page.media && !page.media.paused) return;
   const revision = page.revision;
   page.pending = (async () => {
     try {
-      const file = await readActiveFile(session.meeting, page.key);
+      const file = await (page.key === "transcript" ? readSessionTranscript(session) : readActiveFile(session.meeting, page.key));
       if (session.closed || session.pages.get(page.key) !== page) return;
       if (page.media && !page.media.paused) { page.dirty = true; return; }
       const position = page.content.scrollTop;
@@ -604,6 +688,7 @@ function syncDetail(session, meeting) {
   session.title.textContent = titleFor(meeting); session.date.textContent = formatDetailDate(meeting);
   session.metadata.textContent = `${formatTimeRange(meeting)} · Google Meet`;
   session.recovery.dispatchEvent(new CustomEvent("asterion:recovery-update", { detail: meeting }));
+  updateTranscriptActions(session);
   const available = availableTabs(meeting);
   const keys = available.map(([, key]) => key);
   let changed = false;
@@ -743,6 +828,7 @@ function renderDetail(animate = false) {
   meetingRegion.append(header, navigation, viewport);
   const session = { id: ++nextDetailId, meetingId: meetingId(meeting), meeting, pages: new Map(), title, date, metadata, recovery, tablist, track, closed: false, playIntent: null, playingMedia: null };
   detailSession = session;
+  if (TRANSCRIPT_AI_ENABLED) createTranscriptActions(session, navigation);
   syncDetail(session, meeting);
   if (focusInside) session.pages.get(state.selectedTab)?.tab.focus();
   if (hadMeeting && animate && meetingRegion.animate) {

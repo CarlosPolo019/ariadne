@@ -1,12 +1,14 @@
 const params = new URLSearchParams(location.search);
 Object.defineProperty(navigator, 'language', { value: params.get('locale') || 'en' });
 let historyChanged;
+const openedAi = [], copiedTranscripts = [];
+Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => copiedTranscripts.push(text) } });
 const downloaded = [], preferences = { transcriptDownloadFormat: 'txt' };
 const entry = { sessionId: 'browser', folderName: 'browser-history', meetingTitle: 'A long meeting title '.repeat(8), startedAt: Date.now(), durationMs: 60000, hasTranscript: true, hasVideo: true };
 window.chrome = {
   runtime: { getURL: path => '/' + path, sendMessage: async () => ({ ok: true }) },
   storage: { local: { get: (defaults, callback) => callback({ ...defaults, ...preferences, meetingHistory: [entry], debugLogging: true }), set: async values => { Object.assign(preferences, values); historyChanged({ transcriptDownloadFormat: { newValue: values.transcriptDownloadFormat } }, 'local'); } }, onChanged: { addListener: listener => { historyChanged = listener; } } },
-  tabs: { create() {} }, downloads: { download: options => downloaded.push(options), onChanged: { addListener() {}, removeListener() {} } },
+  tabs: { async create(options) { openedAi.push(options); return { id: 100 }; } }, downloads: { download: options => downloaded.push(options), onChanged: { addListener() {}, removeListener() {} } },
 };
 const folder = await (await navigator.storage.getDirectory()).getDirectoryHandle(entry.folderName, { create: true });
 async function write(name, data) {
@@ -79,6 +81,7 @@ window.runHistoryTest = async () => {
     assert(Math.abs(trailingSpace - parseFloat(getComputedStyle(tab).paddingRight)) < 1, `${key} must have only the standard trailing padding`);
     if (key === 'audio' || key === 'video') assert(tab.querySelector('.detail-playback-marker').hidden, 'Paused media must not reserve marker space');
   }
+  assert(!document.querySelector('.transcript-actions'), 'Transcript AI actions must remain unavailable');
   const navigation = document.querySelector('.detail-navigation');
   const pager = document.querySelector('.detail-pager');
   assert(pager.getBoundingClientRect().top - navigation.getBoundingClientRect().bottom === 16, 'Tabs and content must have only the normal 16px gap');

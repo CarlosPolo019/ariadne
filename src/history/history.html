@@ -82,7 +82,12 @@
       .detail-content:not(.has-meeting) .meeting-region { align-items: center; justify-content: center; }
       .meeting-footer { flex: none; border-top: 1px solid var(--border); padding-top: 12px; }
       .meeting-footer[hidden] { display: none; }
-      .detail-navigation { flex: none; min-height: 32px; }
+      .detail-navigation { flex: none; min-height: 32px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; }
+      .detail-navigation .detail-tabs { flex-wrap: wrap; max-width: 100%; }
+      .transcript-actions { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: 100%; }
+      .transcript-actions[hidden] { display: none; }
+      .transcript-action-status { font-size: 11px; color: var(--text-muted); max-width: 280px; text-align: right; }
+      .transcript-action-status:empty { display: none; }
       .detail-tab { position: relative; }
       .detail-tab.is-active { background: transparent; }
       .detail-tab::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--bg-button); opacity: 0; transform-origin: left center; pointer-events: none; }

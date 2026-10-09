@@ -140,5 +140,14 @@
   "history.downloadOption.json": "JSON (.json)",
   "history.downloadSelectedFormat": "Download {{format}}",
   "history.downloadFormatSaveError": "The format could not be remembered. You can still download it.",
-  "history.downloadFileError": "The file could not be downloaded. Try again."
+  "history.downloadFileError": "The file could not be downloaded. Try again.",
+  "history.copyTranscript": "Copy transcript",
+  "history.openWithAi": "Open with AI",
+  "history.openInAi": "Open in {{provider}}",
+  "history.preparingTranscript": "Preparing transcript…",
+  "history.transcriptReadError": "Transcript could not be read.",
+  "history.transcriptCopied": "Transcript copied",
+  "history.transcriptCopyError": "Could not copy the transcript.",
+  "history.aiTabOpened": "AI tab opened",
+  "history.aiOpenError": "Could not open the AI tab. You can copy the transcript."
 }

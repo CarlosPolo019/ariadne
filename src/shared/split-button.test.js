@@ -29,3 +29,15 @@ it('keeps action and preference outside the component and disables both buttons 
   control.close(); control.setDisabled(true); trigger.click(); expect(document.querySelector('.split-menu')).toBeNull();
   expect(control.element.querySelector('.split-primary').disabled).toBe(true);
 });
+it('provides action menu items without radio state or preference changes', () => {
+  const onSelect = vi.fn();
+  control = createSplitButton({ label: 'Copy', menuLabel: 'AI', optionType: 'action', placement: 'below',
+    options: [{ value: 'chatgpt', label: 'ChatGPT' }, { value: 'claude', label: 'Claude' }], onAction: vi.fn(), onSelect });
+  document.body.appendChild(control.element);
+  const trigger = control.element.querySelector('.split-trigger'); trigger.click();
+  expect(document.querySelectorAll('[role="menuitem"]')).toHaveLength(2);
+  expect(document.querySelector('[aria-checked]')).toBeNull(); expect(document.querySelector('.split-check')).toBeNull();
+  control.setValue('claude'); expect(document.querySelector('[aria-checked]')).toBeNull();
+  document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+  document.activeElement.click(); expect(onSelect).toHaveBeenCalledWith('claude'); expect(document.activeElement).toBe(trigger);
+});

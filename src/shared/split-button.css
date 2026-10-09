@@ -8,3 +8,6 @@
 .download-feedback { flex-basis: 100%; margin: 0; font-size: 12px; color: var(--accent-red); }
 .download-feedback:empty { display: none; }
 @media (hover: hover) and (pointer: fine) { .split-button button:hover, .split-menu button:hover, .split-menu button:focus-visible { background: var(--bg-button); } }
+
+.split-icon { display: inline-flex; }
+.split-icon[hidden] { display: none; }

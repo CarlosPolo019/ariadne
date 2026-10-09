@@ -140,5 +140,14 @@
   "history.downloadOption.json": "JSON (.json)",
   "history.downloadSelectedFormat": "Descargar {{format}}",
   "history.downloadFormatSaveError": "No se pudo recordar el formato. Puedes descargarlo igualmente.",
-  "history.downloadFileError": "No se pudo descargar el archivo. Inténtalo de nuevo."
+  "history.downloadFileError": "No se pudo descargar el archivo. Inténtalo de nuevo.",
+  "history.copyTranscript": "Copiar transcripción",
+  "history.openWithAi": "Abrir con IA",
+  "history.openInAi": "Abrir en {{provider}}",
+  "history.preparingTranscript": "Preparando transcripción…",
+  "history.transcriptReadError": "No se pudo leer la transcripción.",
+  "history.transcriptCopied": "Transcripción copiada",
+  "history.transcriptCopyError": "No se pudo copiar la transcripción.",
+  "history.aiTabOpened": "Pestaña de IA abierta",
+  "history.aiOpenError": "No se pudo abrir la pestaña de IA. Puedes copiar la transcripción."
 }

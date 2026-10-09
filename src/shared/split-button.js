@@ -3,11 +3,13 @@ let active = null;
 let nextMenuId = 0;
 const EASING = 'cubic-bezier(0.23, 1, 0.32, 1)';
 
-export function createSplitButton({ label, iconHtml = '', menuLabel, options = [], value, onAction, onSelect, onOpen = () => {} }) {
+export function createSplitButton({ label, iconHtml = '', menuLabel, options = [], value, onAction, onSelect, onOpen = () => {}, optionType = 'selection', placement = 'above' }) {
   const element = document.createElement('div'); element.className = 'split-button';
   const primary = document.createElement('button'); primary.type = 'button'; primary.className = 'split-primary';
   const text = document.createElement('span'); text.textContent = label;
-  primary.innerHTML = iconHtml; primary.appendChild(text); element.appendChild(primary);
+  const glyph = document.createElement('span'); glyph.className = 'split-icon'; glyph.setAttribute('aria-hidden', 'true');
+  const setIconHtml = html => { glyph.innerHTML = html; glyph.hidden = !html; };
+  setIconHtml(iconHtml); primary.append(glyph, text); element.appendChild(primary);
   let trigger = null, menu = null, animation = null;
   const reduced = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   function close(restore = false, immediate = false) {
@@ -47,10 +49,12 @@ export function createSplitButton({ label, iconHtml = '', menuLabel, options = [
     menu.id = `split-menu-${++nextMenuId}`; trigger.setAttribute('aria-controls', menu.id);
     for (const option of options) {
       const item = document.createElement('button'); item.type = 'button'; item.tabIndex = -1;
-      item.setAttribute('role', 'menuitemradio'); item.setAttribute('aria-checked', String(option.value === value));
+      item.setAttribute('role', optionType === 'action' ? 'menuitem' : 'menuitemradio');
+      if (optionType !== 'action') item.setAttribute('aria-checked', String(option.value === value));
       item.dataset.value = option.value;
       const check = document.createElement('span'); check.className = 'split-check'; check.setAttribute('aria-hidden', 'true'); check.textContent = option.value === value ? '✓' : '';
-      item.append(check, document.createTextNode(option.label));
+      if (optionType !== 'action') item.appendChild(check);
+      item.appendChild(document.createTextNode(option.label));
       item.addEventListener('click', () => { close(true); onSelect(option.value); }); menu.appendChild(item);
     }
     document.body.appendChild(menu); trigger.setAttribute('aria-expanded', 'true');
@@ -58,9 +62,11 @@ export function createSplitButton({ label, iconHtml = '', menuLabel, options = [
     menu.style.maxHeight = `${Math.max(80, innerHeight - 16)}px`;
     const bounds = menu.getBoundingClientRect();
     const above = rect.top - bounds.height - 6;
-    menu.style.top = `${Math.max(8, Math.min(innerHeight - bounds.height - 8, above >= 8 ? above : rect.bottom + 6))}px`;
+    const below = rect.bottom + 6;
+    const useAbove = placement === 'below' ? below + bounds.height > innerHeight - 8 && above >= 8 : above >= 8;
+    menu.style.top = `${Math.max(8, Math.min(innerHeight - bounds.height - 8, useAbove ? above : below))}px`;
     menu.style.left = `${Math.max(8, Math.min(innerWidth - bounds.width - 8, rect.right - bounds.width))}px`;
-    menu.style.transformOrigin = above >= 8 ? 'bottom right' : 'top right';
+    menu.style.transformOrigin = useAbove ? 'bottom right' : 'top right';
     if (!keyboard && menu.animate) animation = menu.animate(reduced() ? [{ opacity: 0 }, { opacity: 1 }]
       : [{ opacity: 0, transform: 'scale(0.97)' }, { opacity: 1, transform: 'scale(1)' }], { duration: 160, easing: EASING });
     const items = [...menu.querySelectorAll('button')];
@@ -76,9 +82,9 @@ export function createSplitButton({ label, iconHtml = '', menuLabel, options = [
     element.appendChild(trigger);
   }
   primary.addEventListener('click', () => { close(false, true); onAction(); });
-  return { element, close, setLabel: label => { text.textContent = label; }, setValue: next => {
+  return { element, close, setIconHtml, setLabel: label => { text.textContent = label; }, setValue: next => {
     value = next;
-    for (const item of menu?.querySelectorAll('button') ?? []) { const selected = item.dataset.value === next; item.setAttribute('aria-checked', String(selected)); item.querySelector('.split-check').textContent = selected ? '✓' : ''; }
+    for (const item of optionType === 'action' ? [] : menu?.querySelectorAll('button') ?? []) { const selected = item.dataset.value === next; item.setAttribute('aria-checked', String(selected)); item.querySelector('.split-check').textContent = selected ? '✓' : ''; }
   },
     setDisabled: disabled => { primary.disabled = disabled; if (trigger) trigger.disabled = disabled; },
     destroy: () => { close(false, true); element.remove(); } };
