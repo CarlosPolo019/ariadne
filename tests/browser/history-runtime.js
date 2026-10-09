@@ -4,7 +4,7 @@ let historyChanged;
 const entry = { sessionId: 'browser', folderName: 'browser-history', meetingTitle: 'A long meeting title '.repeat(8), startedAt: Date.now(), durationMs: 60000, hasTranscript: true, hasVideo: true };
 window.chrome = {
   runtime: { getURL: path => '/' + path, sendMessage: async () => ({ ok: true }) },
-  storage: { local: { get: (defaults, callback) => callback({ ...defaults, meetingHistory: [entry] }) }, onChanged: { addListener: listener => { historyChanged = listener; } } },
+  storage: { local: { get: (defaults, callback) => callback({ ...defaults, meetingHistory: [entry], debugLogging: true }) }, onChanged: { addListener: listener => { historyChanged = listener; } } },
   tabs: { create() {} }, downloads: { download() {}, onChanged: { addListener() {}, removeListener() {} } },
 };
 const folder = await (await navigator.storage.getDirectory()).getDirectoryHandle(entry.folderName, { create: true });
@@ -32,10 +32,16 @@ await import('../../src/history/history.js');
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate) { const end = Date.now() + 8000; while (!predicate()) { if (Date.now() > end) throw new Error('Fixture timeout'); await wait(20); } }
 const assert = (value, message) => { if (!value) throw new Error(message); };
-window.previewHistory = async () => {
+window.previewHistory = async (media = null) => {
   historyChanged({ meetingHistory: { newValue: [entry] } }, 'local');
   document.querySelector('.meeting-card').click();
   await until(() => document.querySelector('.transcript-list'));
+  if (media) {
+    document.querySelector(`[role="tab"][id$="-${media}-tab"]`).click();
+    const panel = document.querySelector(`[role="tabpanel"][id$="-${media}-panel"]`);
+    await until(() => panel.querySelector(media)?.readyState >= 1);
+    panel.querySelector('.media-play').click(); await until(() => !panel.querySelector(media).paused); await wait(250);
+  }
 };
 window.runHistoryTest = async () => {
   const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
@@ -44,6 +50,12 @@ window.runHistoryTest = async () => {
   const page = key => document.querySelector(`[role="tabpanel"][id$="-${key}-panel"]`);
   const select = key => document.querySelector(`[role="tab"][id$="-${key}-tab"]`).click();
   await until(() => page('transcript').querySelector('.transcript-list'));
+  for (const key of ['transcript', 'audio', 'video', 'manifest']) {
+    const tab = document.querySelector(`[role="tab"][id$="-${key}-tab"]`);
+    const trailingSpace = tab.getBoundingClientRect().right - tab.querySelector('span').getBoundingClientRect().right;
+    assert(Math.abs(trailingSpace - parseFloat(getComputedStyle(tab).paddingRight)) < 1, `${key} must have only the standard trailing padding`);
+    if (key === 'audio' || key === 'video') assert(tab.querySelector('.detail-playback-marker').hidden, 'Paused media must not reserve marker space');
+  }
   const navigation = document.querySelector('.detail-navigation');
   const pager = document.querySelector('.detail-pager');
   assert(pager.getBoundingClientRect().top - navigation.getBoundingClientRect().bottom === 16, 'Tabs and content must have only the normal 16px gap');
@@ -54,15 +66,35 @@ window.runHistoryTest = async () => {
   assert(content.scrollTop === 567, 'Transcript must have real scroll geometry');
   select('audio'); await until(() => page('audio').querySelector('audio')?.readyState >= 1);
   const audio = page('audio').querySelector('audio'); audio.loop = true;
-  page('audio').querySelector('.media-play').click(); await until(() => !audio.paused && audio.currentTime > .1);
+  const audioTab = document.querySelector('[role="tab"][id$="-audio-tab"]');
+  const idleWidth = audioTab.getBoundingClientRect().width;
+  page('audio').querySelector('.media-play').click(); await until(() => !audio.paused);
+  await wait(35);
+  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const scale = new DOMMatrixReadOnly(getComputedStyle(audioTab, '::before').transform).a;
+    assert(scale > idleWidth / audioTab.getBoundingClientRect().width && scale < 1, 'The active tab surface must have an intermediate size');
+    assert(audioTab.querySelector('span').getAnimations().length === 0, 'The label must not be scaled');
+  }
+  await until(() => audio.currentTime > .1);
+  const marker = audioTab.querySelector('.detail-playback-marker');
+  const label = audioTab.querySelector('span');
+  const markerRect = marker.getBoundingClientRect(), labelRect = label.getBoundingClientRect();
+  assert(Math.abs(markerRect.y + markerRect.height / 2 - labelRect.y - labelRect.height / 2) < 1, 'Playback marker must align with the label center');
+  assert(Math.abs(audioTab.getBoundingClientRect().width - idleWidth - 16) < 1, 'Playing tab must grow by the marker and its spacing only');
+  assert(markerRect.left - labelRect.right >= 9.5, 'The fully expanded aura must leave clear space beside the label');
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  assert(getComputedStyle(marker, '::after').animationName === (reducedMotion ? 'none' : 'playback-aura'), 'Aura must follow reduced-motion preference');
   select('transcript'); const initial = audio.currentTime; await wait(150);
   assert(pager.getBoundingClientRect().top === pagerTop, 'Playback feedback must not shift the pager');
   assert(!audio.paused && audio.currentTime > initial, 'Audio must continue offscreen');
-  assert(document.querySelector('.playback-status').textContent.includes(document.documentElement.lang === 'fr' ? 'Lecture audio' : document.documentElement.lang === 'es' ? 'Reproduciendo audio' : 'Playing audio'), 'Playback status must follow real audio');
+  assert(!document.querySelector('.playback-status') && !document.querySelector('.detail-navigation .detail-action'), 'Tabs must not show an extra playback or pause control');
+  assert(audioTab.classList.contains('is-playing') && !marker.hidden, 'Playing audio must have a green marker');
+  assert(audioTab.getAttribute('aria-description').includes(document.documentElement.lang === 'fr' ? 'Lecture audio' : document.documentElement.lang === 'es' ? 'Reproduciendo audio' : 'Playing audio'), 'The playback marker must have an accessible description');
   assert(content.scrollTop === 567, 'Transcript scroll must survive navigation exactly');
   select('video'); await until(() => page('video').querySelector('video')?.readyState >= 1);
   const video = page('video').querySelector('video'); video.loop = true;
   page('video').querySelector('.media-play').click(); await until(() => !video.paused && audio.paused);
+  assert(document.querySelector('[role="tab"][id$="-video-tab"]').classList.contains('is-playing') && !audioTab.classList.contains('is-playing'), 'Only the playing video tab must have a marker');
   const audioTime = audio.currentTime;
   select('manifest'); await until(() => page('manifest').querySelector('pre'));
   const manifest = page('manifest').querySelector('.detail-tab-content'); manifest.scrollTop = 345;
@@ -84,6 +116,19 @@ window.runHistoryTest = async () => {
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) assert(getComputedStyle(document.querySelector('.detail-track')).transitionDuration === '0s', 'Reduced motion must be instant');
   assert(document.querySelectorAll('.delete-meeting-button').length === 1, 'Meeting deletion must have one common button');
   assert(deleteButton === document.querySelector('.delete-meeting-button') && deleteButton.getBoundingClientRect().y === deletePosition.y, 'Delete must stay fixed across tab changes and scrolling');
+  select('manifest');
+  document.querySelector('[role="tab"][id$="-manifest-tab"]').focus();
+  historyChanged({ debugLogging: { newValue: false } }, 'local');
+  assert(!page('manifest') && document.activeElement.id.endsWith('transcript-tab'), 'Disabling debug removes the manifest and transfers focus');
+  assert(page('audio').querySelector('audio') === audio && !audio.paused, 'Debug changes must preserve playing media');
+  assert([...document.querySelectorAll('.file-chip')].every(chip => !/manifest/i.test(chip.textContent)), 'Normal history must hide manifest chips');
+  historyChanged({ debugLogging: { newValue: true } }, 'local');
+  assert(page('manifest'), 'Enabling debug restores the manifest');
+  for (let i = 0; i < 3; i++) { audio.pause(); await audio.play(); }
+  audio.pause(); await wait(250);
+  assert(marker.hidden && !audioTab.classList.contains('is-playing'), 'Rapid playback reversals must end paused');
+  assert(!document.querySelector('.detail-playback-marker.is-exiting'), 'Temporary exit markers must be cleaned up');
+  assert(audioTab.getBoundingClientRect().width === idleWidth, 'Pausing must restore the original tab size');
   const other = { ...entry, sessionId: 'other', meetingTitle: 'Another meeting' };
   historyChanged({ meetingHistory: { newValue: [entry, other] } }, 'local');
   const cards = document.querySelectorAll('.meeting-card');

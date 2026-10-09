@@ -41,6 +41,8 @@ describe("history session links", () => {
     expect(document.querySelector(".detail-title").textContent).toBe("Meeting target");
     expect(document.activeElement.dataset.meetingId).not.toBe("target");
     expect(document.querySelector('.meeting-card.is-selected').hasAttribute("tabindex")).toBe(false);
+    expect(document.querySelector('[role="tab"][id$="-manifest-tab"]')).toBeNull();
+    expect([...document.querySelectorAll('.file-chip')].some(chip => chip.textContent.trim().endsWith(en['common.manifest']))).toBe(false);
   });
 
   it("waits for initial publication and selects it when storage changes", async () => {

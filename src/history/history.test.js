@@ -22,7 +22,7 @@ globalThis.chrome = {
   runtime: { getURL: (path) => path },
   storage: {
     local: {
-      get: (defaults, callback) => callback(defaults),
+      get: (defaults, callback) => callback({ ...defaults, debugLogging: true }),
       set: () => {},
     },
     onChanged: { addListener: listener => { historyChanged = listener; } },
@@ -267,6 +267,28 @@ it('keeps mounted pages, independent scroll, media state and file-specific actio
   expect(page('audio').querySelector('audio')).toBe(audio); expect(audio.paused).toBe(false);
 });
 
+it('shows the manifest only in debug mode and updates live without interrupting media', async () => {
+  const { select, page } = await openFixture('debug-preference');
+  select('audio'); await vi.waitFor(() => expect(page('audio').querySelector('audio')).toBeTruthy());
+  const audio = page('audio').querySelector('audio');
+  page('audio').querySelector('.media-play').click(); await Promise.resolve();
+  select('manifest'); await vi.waitFor(() => expect(page('manifest').querySelector('pre')).toBeTruthy());
+  document.querySelector('[role="tab"][id$="-manifest-tab"]').focus();
+  const oldManifest = page('manifest');
+  historyChanged({ debugLogging: { newValue: false } }, 'local');
+  expect(page('manifest')).toBeNull(); expect(oldManifest.isConnected).toBe(false);
+  expect([...document.querySelectorAll('.file-chip')].some(chip => chip.textContent.trim().endsWith(en['common.manifest']))).toBe(false);
+  expect(document.activeElement.id).toMatch(/transcript-tab$/);
+  expect(page('audio').querySelector('audio')).toBe(audio); expect(audio.paused).toBe(false);
+  historyChanged({ debugLogging: { newValue: true } }, 'local');
+  expect(page('manifest')).toBeTruthy(); expect(page('manifest')).not.toBe(oldManifest);
+  expect([...document.querySelectorAll('.file-chip')].some(chip => chip.textContent.trim().endsWith(en['common.manifest']))).toBe(true);
+  select('audio'); historyChanged({ debugLogging: { newValue: undefined } }, 'local');
+  expect(document.querySelector('[role="tab"][aria-selected="true"]').id).toMatch(/audio-tab$/);
+  expect(page('manifest')).toBeNull(); expect(audio.paused).toBe(false);
+  historyChanged({ debugLogging: { newValue: true } }, 'local');
+});
+
 it('preserves metadata updates, refreshes converted media only while paused, and cleans up on another meeting', async () => {
   const { root, entry, select, page } = await openFixture('conversion');
   select('audio'); await vi.waitFor(() => expect(page('audio').querySelector('audio')).toBeTruthy());
@@ -356,15 +378,20 @@ it('preserves open media when another meeting is deleted and reports deletion er
   expect(page('audio').querySelector('audio')).toBe(audio); expect(audio.paused).toBe(false);
   expect(document.activeElement.className).toBe('details-button');
 });
-it('coordinates the common pause control and indicator without shifting the selected page', async () => {
+it('indicates playback only on the media tab and keeps pause in the player', async () => {
   const { select, page } = await openFixture('play-status');
   select('audio'); await vi.waitFor(() => expect(page('audio').querySelector('audio')).toBeTruthy());
   const audio = page('audio').querySelector('audio'); audio.currentTime = 15;
   page('audio').querySelector('.media-play').click(); await Promise.resolve(); select('transcript');
-  const bar = document.querySelector('.playback-status'); expect(bar.hidden).toBe(false);
-  expect(bar.textContent).toContain('history.playingAudio'); expect(page('audio').getAttribute('aria-hidden')).toBe('true');
-  expect(document.querySelector('[role="tab"][id$="audio-tab"]').classList.contains('is-playing')).toBe(true);
-  bar.querySelector('button').click(); expect(audio.paused).toBe(true); expect(audio.currentTime).toBe(15); expect(bar.hidden).toBe(true);
+  expect(document.querySelector('.playback-status')).toBeNull();
+  expect(document.querySelector('.detail-navigation .detail-action')).toBeNull();
+  expect(page('audio').getAttribute('aria-hidden')).toBe('true');
+  const tab = document.querySelector('[role="tab"][id$="audio-tab"]');
+  expect(tab.classList.contains('is-playing')).toBe(true);
+  expect(tab.getAttribute('aria-description')).toBe('history.playingAudio');
+  select('audio'); page('audio').querySelector('.media-play').click();
+  expect(audio.paused).toBe(true); expect(audio.currentTime).toBe(15);
+  expect(tab.classList.contains('is-playing')).toBe(false); expect(tab.hasAttribute('aria-description')).toBe(false);
 });
 it('opens the menu by keyboard, handles Escape, and only animates pointer changes between meetings', async () => {
   const { entry } = await openFixture('motion');

@@ -54,6 +54,9 @@ try {
       await call('Runtime.evaluate', { expression: 'window.previewHistory()', awaitPromise: true });
       const shot = await call('Page.captureScreenshot', { format: 'png' });
       await writeFile(join(process.env.HISTORY_SCREENSHOT_DIR, `history-${locale}-${theme}.png`), Buffer.from(shot.data, 'base64'));
+      await call('Runtime.evaluate', { expression: "window.previewHistory('audio')", awaitPromise: true });
+      const playing = await call('Page.captureScreenshot', { format: 'png' });
+      await writeFile(join(process.env.HISTORY_SCREENSHOT_DIR, `history-playing-${locale}-${theme}.png`), Buffer.from(playing.data, 'base64'));
     }
   }
   for (const locale of ['en', 'es', 'fr']) for (const theme of ['dark', 'light']) {

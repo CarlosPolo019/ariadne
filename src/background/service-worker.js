@@ -199,11 +199,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type !== "asterion:get-video-preset") return;
 
   chrome.storage.local
-    .get({ videoPreset: "medium" })
+    .get({ videoPreset: "ultrafast" })
     .then(({ videoPreset }) => sendResponse({ videoPreset }))
     .catch((error) => {
-      console.error("[Ariadne] Could not read the saved video preset; using 'medium':", error);
-      sendResponse({ videoPreset: "medium" });
+      console.error("[Ariadne] Could not read the saved video preset; using 'ultrafast':", error);
+      sendResponse({ videoPreset: "ultrafast" });
     });
 
   return true;

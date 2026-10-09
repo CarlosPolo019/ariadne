@@ -20,6 +20,7 @@ let linkedSessionId = new URLSearchParams(location.search).get("sessionId");
 let linkedSessionStatus = "waiting";
 let detailSession = null;
 let nextDetailId = 0;
+let debugLogging = false;
 let detailShell, meetingRegion, meetingFooter, deleteMeetingButton, meetingAnimation;
 let openMoreMenu = null;
 const pendingDeletes = new Set();
@@ -268,7 +269,7 @@ function createMeetingCard(meeting) {
   header.append(title, moreWrap);
   const date = document.createElement("p"); date.className = "meeting-date"; date.textContent = formatMeetingDate(meeting);
   const chips = document.createElement("div"); chips.className = "file-chips";
-  [[meeting.hasTranscript, "file-text", t("common.transcript"), "transcript"], [true, "volume-2", t("common.audio"), "audio"], [meeting.hasVideo, "video", t("common.video"), "video"], [true, "braces", t("common.manifest"), "manifest"]].forEach(([available, iconName, label, tab]) => {
+  [[meeting.hasTranscript, "file-text", t("common.transcript"), "transcript"], [true, "volume-2", t("common.audio"), "audio"], [meeting.hasVideo, "video", t("common.video"), "video"], ...(debugLogging ? [[true, "braces", t("common.manifest"), "manifest"]] : [])].forEach(([available, iconName, label, tab]) => {
     const chip = document.createElement(available ? "button" : "span"); if (available) chip.type = "button"; chip.className = `file-chip${available ? " is-available" : " is-unavailable"}`;
     chip.innerHTML = icon(iconName, { size: 12, color: "currentColor" });
     chip.appendChild(document.createTextNode(label));
@@ -281,7 +282,7 @@ function createMeetingCard(meeting) {
   card.append(header, date, chips, detailsRow); return card;
 }
 
-function availableTabs(meeting) { return [[meeting.hasTranscript, "transcript", t("common.transcript")], [true, "audio", t("common.audio")], [meeting.hasVideo, "video", t("common.video")], [true, "manifest", t("common.manifest")]].filter(([available]) => available); }
+function availableTabs(meeting) { return [[meeting.hasTranscript, "transcript", t("common.transcript")], [true, "audio", t("common.audio")], [meeting.hasVideo, "video", t("common.video")], [debugLogging, "manifest", t("common.manifest")]].filter(([available]) => available); }
 function escapeHtml(value) { return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 function highlightJson(value) {
   const escaped = escapeHtml(JSON.stringify(value, null, 2));
@@ -326,6 +327,9 @@ function createFileFooter(activeFile, meeting, tab) {
   fileRow.append(metadata, actions); footer.append(fileRow); return footer;
 }
 function disposePage(page) {
+  page.tabMotion?.forEach(animation => animation.cancel());
+  page.markerMotion?.cancel();
+  page.tab.querySelectorAll('.is-exiting').forEach(marker => marker.remove());
   if (page.media) { page.media.pause(); page.media.removeAttribute("src"); page.media.load(); }
   if (page.url) URL.revokeObjectURL(page.url);
   page.media = null; page.url = null;
@@ -564,11 +568,16 @@ function syncDetail(session, meeting) {
       const tab = document.createElement("button"); tab.type = "button"; tab.className = "detail-tab";
       tab.id = `detail-${session.id}-${key}-tab`; tab.setAttribute("role", "tab");
       tab.innerHTML = `${icon(icons[key], { size: 14, color: "currentColor" })}<span>${label}</span>`;
+      let marker = null;
+      if (key === "audio" || key === "video") {
+        marker = document.createElement("span"); marker.className = "detail-playback-marker";
+        marker.hidden = true; marker.setAttribute("aria-hidden", "true"); tab.appendChild(marker);
+      }
       const panel = document.createElement("section"); panel.className = "detail-page"; panel.id = `detail-${session.id}-${key}-panel`;
       panel.setAttribute("role", "tabpanel"); panel.setAttribute("aria-labelledby", tab.id); tab.setAttribute("aria-controls", panel.id);
       const content = document.createElement("div"); content.className = `detail-tab-content is-${key}`;
       const loading = document.createElement("p"); loading.className = "detail-loading"; loading.textContent = t("history.loadingFile"); content.appendChild(loading); panel.appendChild(content);
-      page = { key, tab, panel, content, revision: fileRevision(meeting, key), dirty: false, pending: null, file: null, media: null, url: null };
+      page = { key, tab, marker, panel, content, revision: fileRevision(meeting, key), dirty: false, pending: null, file: null, media: null, url: null };
       tab.addEventListener("click", () => selectPage(session, key));
       tab.addEventListener("keydown", event => {
         const list = [...session.pages.keys()]; const index = list.indexOf(key);
@@ -599,11 +608,53 @@ function syncDetail(session, meeting) {
 function updatePlaybackStatus(session) {
   if (session.closed) return;
   const active = [...session.pages.values()].find(page => page.media && page.media === session.playingMedia && !page.media.paused && !page.media.ended);
-  for (const page of session.pages.values()) page.tab.classList.toggle("is-playing", page === active);
-  session.playback.hidden = !active;
-  session.pause.disabled = !active;
-  const label = active ? t(active.key === "video" ? "history.playingVideo" : "history.playingAudio") : "";
-  if (session.playbackLabel.textContent !== label) session.playbackLabel.textContent = label;
+  const pages = [...session.pages.values()];
+  const changed = pages.some(page => page.tab.classList.contains("is-playing") !== (page === active));
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  const duration = active ? 200 : 150;
+  const easing = "cubic-bezier(0.23, 1, 0.32, 1)";
+  const before = new Map();
+  if (changed) for (const page of pages) {
+    const rect = page.tab.getBoundingClientRect();
+    let surfaceScale = 1;
+    if (page.tabMotion?.some(animation => animation.effect?.pseudoElement === "::before")) {
+      const transform = getComputedStyle(page.tab, "::before").transform;
+      if (transform.startsWith("matrix(")) surfaceScale = Number(transform.slice(7).split(",")[0]);
+    }
+    before.set(page, { left: rect.left, width: rect.width * surfaceScale });
+    page.tabMotion?.forEach(animation => animation.cancel());
+    page.tab.querySelectorAll('.is-exiting').forEach(marker => marker.remove());
+    const wasPlaying = page.tab.classList.contains("is-playing");
+    if (wasPlaying && page !== active && page.marker && page.tab.animate && !document.hidden) {
+      const markerRect = page.marker.getBoundingClientRect(), tabRect = page.tab.getBoundingClientRect();
+      const copy = page.marker.cloneNode(true); copy.classList.add("is-exiting");
+      copy.style.position = "absolute"; copy.style.left = `${markerRect.left - tabRect.left}px`; copy.style.top = `${markerRect.top - tabRect.top}px`;
+      const opacity = getComputedStyle(page.marker).opacity;
+      page.tab.appendChild(copy);
+      const exit = copy.animate(reduced ? [{ opacity }, { opacity: 0 }] : [{ opacity, transform: "scale(1)" }, { opacity: 0, transform: "scale(0.9)" }], { duration: reduced ? 120 : 150, easing });
+      const remove = () => copy.remove(); exit.finished.then(remove, remove);
+    }
+    if (wasPlaying !== (page === active)) {
+      page.markerMotion?.cancel();
+      if (page.marker) page.marker.hidden = page !== active;
+      if (page === active && page.marker && page.tab.animate && !document.hidden) {
+        page.markerMotion = page.marker.animate(reduced ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, transform: "scale(0.9)" }, { opacity: 1, transform: "scale(1)" }], { duration: reduced ? 120 : 200, easing });
+      }
+    }
+  }
+  for (const page of session.pages.values()) {
+    page.tab.classList.toggle("is-playing", page === active);
+    if (page === active) page.tab.setAttribute("aria-description", t(page.key === "video" ? "history.playingVideo" : "history.playingAudio"));
+    else page.tab.removeAttribute("aria-description");
+  }
+  if (changed && !reduced && !document.hidden) for (const page of pages) {
+    if (!page.tab.animate) continue;
+    const old = before.get(page), next = page.tab.getBoundingClientRect();
+    if (!next.width) continue;
+    page.tabMotion = [];
+    if (old.left !== next.left) page.tabMotion.push(page.tab.animate([{ transform: `translateX(${old.left - next.left}px)` }, { transform: "translateX(0)" }], { duration, easing }));
+    if (old.width !== next.width) page.tabMotion.push(page.tab.animate([{ transform: `scaleX(${old.width / next.width})` }, { transform: "scaleX(1)" }], { duration, easing, pseudoElement: "::before" }));
+  }
 }
 function mountDetailShell() {
   if (detailShell) return;
@@ -636,21 +687,12 @@ function renderDetail(animate = false) {
   const recovery = createRecoveryPanel(meeting); header.append(title, date, metadata, recovery);
   const tablist = document.createElement("div"); tablist.className = "detail-tabs"; tablist.setAttribute("role", "tablist");
   const navigation = document.createElement("div"); navigation.className = "detail-navigation";
-  const playbackSlot = document.createElement("div"); playbackSlot.className = "playback-slot";
-  const playback = document.createElement("div"); playback.className = "playback-status"; playback.hidden = true;
-  const playbackLabel = document.createElement("span"); playbackLabel.setAttribute("role", "status");
-  const pause = document.createElement("button"); pause.type = "button"; pause.className = "detail-action"; pause.textContent = t("common.pause"); pause.disabled = true;
-  playback.append(playbackLabel, pause); playbackSlot.appendChild(playback);
   const viewport = document.createElement("div"); viewport.className = "detail-pager";
   const track = document.createElement("div"); track.className = "detail-track"; viewport.appendChild(track);
-  navigation.append(tablist, playbackSlot);
+  navigation.append(tablist);
   meetingRegion.append(header, navigation, viewport);
-  const session = { id: ++nextDetailId, meetingId: meetingId(meeting), meeting, pages: new Map(), title, date, metadata, recovery, tablist, track, playback, playbackLabel, pause, closed: false, playIntent: null, playingMedia: null };
+  const session = { id: ++nextDetailId, meetingId: meetingId(meeting), meeting, pages: new Map(), title, date, metadata, recovery, tablist, track, closed: false, playIntent: null, playingMedia: null };
   detailSession = session;
-  pause.addEventListener("click", () => {
-    session.playIntent = null; session.playingMedia?.pause();
-    if (playback.contains(document.activeElement)) session.pages.get(state.selectedTab)?.tab.focus();
-  });
   syncDetail(session, meeting);
   if (focusInside) session.pages.get(state.selectedTab)?.tab.focus();
   if (hadMeeting && animate && meetingRegion.animate) {
@@ -698,8 +740,9 @@ function renderAllExceptDetail() { transcriptSearch.update(state.meetings, state
 searchInput.addEventListener("input", () => { state.search = searchInput.value; transcriptSearch.update(state.meetings, state.search, { retryErrors: true }); renderAllExceptDetail(); });
 sortSelect.addEventListener("change", () => { state.sort = sortSelect.value; renderMeetings(); });
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "local" || !changes.meetingHistory) return;
-  state.meetings = Array.isArray(changes.meetingHistory.newValue) ? changes.meetingHistory.newValue : [];
+  if (areaName !== "local" || (!changes.meetingHistory && !changes.debugLogging)) return;
+  if (changes.debugLogging) debugLogging = changes.debugLogging.newValue === true;
+  if (changes.meetingHistory) state.meetings = Array.isArray(changes.meetingHistory.newValue) ? changes.meetingHistory.newValue : [];
   const selected = state.meetings.find(meeting => meetingId(meeting) === state.selectedMeetingId);
   if (state.selectedMeetingId && !selected) state.selectedMeetingId = null;
   renderAllExceptDetail();
@@ -719,7 +762,8 @@ function selectLinkedMeeting() {
   return true;
 }
 
-chrome.storage.local.get({ meetingHistory: [] }, ({ meetingHistory }) => {
+chrome.storage.local.get({ meetingHistory: [], debugLogging: false }, ({ meetingHistory, debugLogging: debugEnabled }) => {
+  debugLogging = debugEnabled === true;
   state.meetings = Array.isArray(meetingHistory) ? meetingHistory : [];
   renderAllExceptDetail();
   if (!selectLinkedMeeting()) renderDetail();
