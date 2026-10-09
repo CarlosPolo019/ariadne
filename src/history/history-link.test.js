@@ -39,7 +39,8 @@ describe("history session links", () => {
     await setup({ entries: [meeting("newest"), meeting("target")] });
     expect(selectedId()).toBe("target");
     expect(document.querySelector(".detail-title").textContent).toBe("Meeting target");
-    expect(document.activeElement.dataset.meetingId).toBe("target");
+    expect(document.activeElement.dataset.meetingId).not.toBe("target");
+    expect(document.querySelector('.meeting-card.is-selected').hasAttribute("tabindex")).toBe(false);
   });
 
   it("waits for initial publication and selects it when storage changes", async () => {

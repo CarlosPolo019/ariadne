@@ -714,9 +714,7 @@ function selectLinkedMeeting() {
   const card = [...meetingsListEl.querySelectorAll(".meeting-card")]
     .find(card => card.dataset.meetingId === meetingId(meeting));
   if (card) {
-    card.tabIndex = -1;
     card.scrollIntoView?.({ block: "nearest" });
-    card.focus({ preventScroll: true });
   }
   return true;
 }
