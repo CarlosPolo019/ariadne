@@ -1,5 +1,6 @@
 // src/webrtc-bootstrap/audio-mixer.js
 import { measureAudioSamples } from "./audio-levels.js";
+import { resumeAudioContext } from "./audio-activation.js";
 const RECONCILE_INTERVAL_MS = 5000;
 
 export class MeetingAudioMixer {
@@ -470,10 +471,8 @@ export class MeetingAudioMixer {
     return this.destination.stream;
   }
 
-  async resume() {
-    if (this.audioContext.state === "suspended") {
-      await this.audioContext.resume();
-    }
+  async resume(options) {
+    await resumeAudioContext(this.audioContext, options);
   }
 
   async close() {

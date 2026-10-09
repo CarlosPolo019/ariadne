@@ -41,10 +41,13 @@ afterEach(() => {
 
 it("acknowledges stop while the mixer is resuming and never creates the cancelled recorder", async () => {
   const post = await setup();
+  expect(mocks.resume).not.toHaveBeenCalled();
   let resume;
   mocks.resume.mockReturnValueOnce(new Promise(resolve => { resume = resolve; }));
   emit("asterion:start-session", "cancelled"); await flush();
+  const signal = mocks.resume.mock.calls[0][0].signal;
   emit("asterion:stop-session", "cancelled"); await flush();
+  expect(signal.aborted).toBe(true);
   expect(post).toHaveBeenCalledWith(expect.objectContaining({ type: "asterion:session-ended", sessionId: "cancelled" }), "*", []);
   resume(); await flush(); expect(mocks.session).not.toHaveBeenCalled();
 });

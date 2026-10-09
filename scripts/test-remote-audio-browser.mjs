@@ -37,7 +37,8 @@ let chrome;
 let socket;
 async function launchChrome() {
   chrome = spawn(executable, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`,
-    "--enable-unsafe-extension-debugging", "--no-first-run", "--no-default-browser-check", "--autoplay-policy=no-user-gesture-required", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
+    "--enable-unsafe-extension-debugging", "--no-first-run", "--no-default-browser-check",
+    ...(process.argv.includes("--activation-only") ? ["--disable-features=PreloadMediaEngagementData,MediaEngagementBypassAutoplayPolicies"] : ["--autoplay-policy=no-user-gesture-required"]), "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
   return await new Promise((resolve, reject) => {
     let output = "";
     const timeout = setTimeout(() => reject(new Error("Chrome startup timed out")), 15000);
@@ -66,10 +67,14 @@ try {
   socket = new WebSocket(pages.find((page) => page.type === "page").webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
   let nextId = 0;
+  const autoplayWarnings = [];
   const pending = new Map();
   socket.onmessage = ({ data }) => {
     const message = JSON.parse(data);
     if (!message.id) {
+      const text = message.method === "Log.entryAdded" ? message.params.entry.text
+        : message.method === "Runtime.consoleAPICalled" ? message.params.args.map(arg => arg.value ?? arg.description ?? "").join(" ") : "";
+      if (/AudioContext was not allowed to start/i.test(text)) autoplayWarnings.push(text);
       if (message.method === "Runtime.consoleAPICalled" && message.params.type === "error") console.error("Browser:", ...message.params.args.map((arg) => arg.value ?? arg.description));
       return;
     }
@@ -86,7 +91,26 @@ try {
     pending.set(id, { resolve, reject, timer });
     socket.send(JSON.stringify({ id, method, params }));
   });
-  if (process.argv.includes("--integration-only")) {
+  if (process.argv.includes("--activation-only")) {
+    await command("Runtime.enable");
+    await command("Log.enable");
+    await command("Page.navigate", { url: `http://127.0.0.1:${server.address().port}/tests/browser/audio-activation.html` });
+    const evaluate = async expression => {
+      const result = await command("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
+      if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
+      return result.result.value;
+    };
+    await evaluate(`(async()=>{for(let i=0;i<100&&!window.activationReady;i++)await new Promise(r=>setTimeout(r,20));if(!window.activationReady)throw new Error('Activation fixture unavailable');})()`);
+    const before = await evaluate(`({state:audio.state,unlocked:window.unlocked})`);
+    if (before.state !== "suspended" || before.unlocked) throw new Error("Audio should wait for a real gesture under Chrome autoplay policy");
+    const position = await evaluate(`(()=>{const r=document.getElementById('unlock').getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};})()`);
+    await command("Input.dispatchMouseEvent", { type: "mousePressed", ...position, button: "left", clickCount: 1 });
+    await command("Input.dispatchMouseEvent", { type: "mouseReleased", ...position, button: "left", clickCount: 1 });
+    const after = await evaluate(`(async()=>{for(let i=0;i<100&&!window.unlocked&&!window.activationError;i++)await new Promise(r=>setTimeout(r,20));return {state:audio.state,unlocked:window.unlocked,error:window.activationError};})()`);
+    if (after.state !== "running" || !after.unlocked || after.error) throw new Error(JSON.stringify(after));
+    if (autoplayWarnings.length) throw new Error(JSON.stringify(autoplayWarnings));
+    console.log(JSON.stringify({ audioActivation: { passed: true, before, after } }, null, 2));
+  } else if (process.argv.includes("--integration-only")) {
     await runExtensionIntegration({ root, debuggerUrl, restartBrowser, origin: `http://127.0.0.1:${server.address().port}` });
   } else {
   await command("Runtime.enable");

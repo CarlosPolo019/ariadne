@@ -26,7 +26,12 @@ if (!window.__ariadneCaptureInstalled) {
   let mixer = new MeetingAudioMixer({
     log: (event, details) => debugEvent(`audio-mixer:${event}`, details),
   });
-  mixer.resume().catch(() => {});
+  // Run in the page's real gesture handler, before messaging/storage awaits.
+  const unlockAudio = event => {
+    if (!event.isTrusted || !navigator.userActivation?.isActive || mixer.audioContext.state !== "suspended") return;
+    mixer.resume().catch(error => rtcPatchLog("audio-unlock-error", { message: error.message }));
+  };
+  for (const type of ["click", "keydown", "touchend"]) document.addEventListener(type, unlockAudio, true);
   const playbackObserver = new AudioOutputObserver({ ignoredContext: mixer.audioContext, mixer,
     log: (event, details) => debugEvent(`playback:${event}`, details) });
   playbackObserver.install();
@@ -67,6 +72,7 @@ if (!window.__ariadneCaptureInstalled) {
   let session = null;
   let starting = false;
   let startRequest = 0;
+  let startAbort = null;
   let currentlyMuted = false;
   let stopSpeakerObserver = () => {};
 
@@ -114,6 +120,8 @@ if (!window.__ariadneCaptureInstalled) {
       if (session || starting) return;
       starting = true;
       const request = ++startRequest;
+      const controller = new AbortController();
+      startAbort = controller;
       try {
         setDebugEnabled(message.debugLogging);
         debugLog("[Ariadne:debug] asterion:start-session received; creating MainWorldSession and starting mixer", {
@@ -133,7 +141,7 @@ if (!window.__ariadneCaptureInstalled) {
 
         sweepLocalAudioTracks({ onSenderSweep: (id, senders) => mixer.reconcileLocalOwners(id, senders), onLocalAudioTrack: (track, owner) => mixer.setLocalSender(owner.sender, track, owner.connectionId), log: rtcPatchLog });
         debugLog("[Ariadne] AudioContext state before resume():", mixer.audioContext.state);
-        await mixer.resume();
+        await mixer.resume({ signal: controller.signal });
         if (request !== startRequest) return;
         debugLog("[Ariadne] AudioContext state after resume():", mixer.audioContext.state);
         session = new MainWorldSession({
@@ -162,7 +170,7 @@ if (!window.__ariadneCaptureInstalled) {
         session = null;
         rtcPatchLog("capture-start-error", { message: error.message });
         postToIsolated({ type: "asterion:start-failed", sessionId: message.sessionId, reason: error.message });
-      } finally { if (request === startRequest) starting = false; }
+      } finally { if (request === startRequest) { starting = false; startAbort = null; } }
     } else if (message.type === "asterion:caption-storage") {
       if (session?.sessionId === message.sessionId) captions.storage = message;
     } else if (message.type === "asterion:caption-enabled") {
@@ -186,6 +194,7 @@ if (!window.__ariadneCaptureInstalled) {
     } else if (message.type === "asterion:stop-session") {
       if (message.sessionId && session && session.sessionId !== message.sessionId) return;
       startRequest++; starting = false;
+      startAbort?.abort(); startAbort = null;
       if (session) diagnostics.getAudioFlowSnapshot().catch((error) => rtcPatchLog("audio-flow-inspection-error", { message: error.message }));
       const endedAt = message.endedAt ?? Date.now();
       health.stop();
