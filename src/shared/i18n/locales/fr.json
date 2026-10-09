@@ -133,5 +133,12 @@
   "history.linkedMeetingWaiting": "En attente de l’enregistrement demandé…",
   "history.linkedMeetingNotFound": "L’enregistrement demandé n’est pas encore disponible dans l’historique.",
   "history.searchingTranscripts": "Recherche dans les transcriptions…",
-  "history.transcriptSearchError": "Certaines transcriptions n’ont pas pu être consultées."
+  "history.transcriptSearchError": "Certaines transcriptions n’ont pas pu être consultées.",
+  "history.downloadFormats": "Format de téléchargement",
+  "history.downloadOption.txt": "Texte (.txt)",
+  "history.downloadOption.md": "Markdown (.md)",
+  "history.downloadOption.json": "JSON (.json)",
+  "history.downloadSelectedFormat": "Télécharger {{format}}",
+  "history.downloadFormatSaveError": "Le format n’a pas pu être mémorisé. Vous pouvez quand même le télécharger.",
+  "history.downloadFileError": "Le fichier n’a pas pu être téléchargé. Réessayez."
 }

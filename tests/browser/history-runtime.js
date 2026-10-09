@@ -1,11 +1,12 @@
 const params = new URLSearchParams(location.search);
 Object.defineProperty(navigator, 'language', { value: params.get('locale') || 'en' });
 let historyChanged;
+const downloaded = [], preferences = { transcriptDownloadFormat: 'txt' };
 const entry = { sessionId: 'browser', folderName: 'browser-history', meetingTitle: 'A long meeting title '.repeat(8), startedAt: Date.now(), durationMs: 60000, hasTranscript: true, hasVideo: true };
 window.chrome = {
   runtime: { getURL: path => '/' + path, sendMessage: async () => ({ ok: true }) },
-  storage: { local: { get: (defaults, callback) => callback({ ...defaults, meetingHistory: [entry], debugLogging: true }) }, onChanged: { addListener: listener => { historyChanged = listener; } } },
-  tabs: { create() {} }, downloads: { download() {}, onChanged: { addListener() {}, removeListener() {} } },
+  storage: { local: { get: (defaults, callback) => callback({ ...defaults, ...preferences, meetingHistory: [entry], debugLogging: true }), set: async values => { Object.assign(preferences, values); historyChanged({ transcriptDownloadFormat: { newValue: values.transcriptDownloadFormat } }, 'local'); } }, onChanged: { addListener: listener => { historyChanged = listener; } } },
+  tabs: { create() {} }, downloads: { download: options => downloaded.push(options), onChanged: { addListener() {}, removeListener() {} } },
 };
 const folder = await (await navigator.storage.getDirectory()).getDirectoryHandle(entry.folderName, { create: true });
 async function write(name, data) {
@@ -50,6 +51,28 @@ window.runHistoryTest = async () => {
   const page = key => document.querySelector(`[role="tabpanel"][id$="-${key}-panel"]`);
   const select = key => document.querySelector(`[role="tab"][id$="-${key}-tab"]`).click();
   await until(() => page('transcript').querySelector('.transcript-list'));
+  const transcriptFooter = page('transcript').querySelector('.detail-footer');
+  assert(transcriptFooter.querySelectorAll('button').length === 2, 'Transcript must have only the download action and its menu trigger');
+  assert(transcriptFooter.querySelector('.split-primary').textContent.includes('TXT'), 'Transcript default must be TXT');
+  transcriptFooter.querySelector('.split-primary').click();
+  assert(downloaded.at(-1).filename.endsWith('.txt') && downloaded.at(-1).saveAs, 'Primary action must request a TXT download with the save dialog');
+  const txt = await (await fetch(downloaded.at(-1).url)).text(); assert(txt.includes('[00:00] [Ana]'), 'TXT download must contain the formatted transcript');
+  const trigger = transcriptFooter.querySelector('.split-trigger');
+  trigger.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+  const popup = document.querySelector('.split-menu'), popupRect = popup.getBoundingClientRect();
+  assert(popup.parentElement === document.body && popupRect.top >= 8 && popupRect.bottom <= innerHeight - 8, 'Download menu must escape clipping and fit the viewport');
+  const enterMenu = popup.getAnimations()[0]; assert(enterMenu?.effect.getTiming().duration === 160, 'Download menu must animate entry');
+  for (const keyframe of enterMenu.effect.getKeyframes()) if (matchMedia('(prefers-reduced-motion: reduce)').matches) assert(!keyframe.transform, 'Reduced menu motion must use opacity only');
+  [...popup.querySelectorAll('button')].find(item => item.textContent.includes('.md')).click();
+  await until(() => preferences.transcriptDownloadFormat === 'md');
+  assert(downloaded.at(-1).filename.endsWith('.md'), 'Menu selection must download and remember Markdown');
+  assert((await (await fetch(downloaded.at(-1).url)).text()).startsWith('# A long meeting title'), 'Markdown download must contain the meeting title');
+  trigger.click(); document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+  assert(document.activeElement.textContent.includes('.json'), 'End must focus JSON');
+  document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert(document.activeElement === trigger && trigger.getAttribute('aria-expanded') === 'false', 'Escape must close the menu and restore trigger focus');
+  historyChanged({ transcriptDownloadFormat: { newValue: 'txt' } }, 'local');
+  await until(() => !document.querySelector('.split-menu'));
   for (const key of ['transcript', 'audio', 'video', 'manifest']) {
     const tab = document.querySelector(`[role="tab"][id$="-${key}-tab"]`);
     const trailingSpace = tab.getBoundingClientRect().right - tab.querySelector('span').getBoundingClientRect().right;
@@ -91,6 +114,10 @@ window.runHistoryTest = async () => {
   assert(audioTab.classList.contains('is-playing') && !marker.hidden, 'Playing audio must have a green marker');
   assert(audioTab.getAttribute('aria-description').includes(document.documentElement.lang === 'fr' ? 'Lecture audio' : document.documentElement.lang === 'es' ? 'Reproduciendo audio' : 'Playing audio'), 'The playback marker must have an accessible description');
   assert(content.scrollTop === 567, 'Transcript scroll must survive navigation exactly');
+  const output = await (await folder.getFileHandle('audio-reunion.webm')).getFile(); await write('audio-reunion.mp3', output);
+  historyChanged({ meetingHistory: { newValue: [{ ...entry, hasAudioMp3: true }] } }, 'local');
+  page('audio').querySelector('.split-primary').click(); await until(() => downloaded.at(-1).filename.endsWith('.mp3'));
+  assert(page('audio').querySelector('audio') === audio && !audio.paused, 'Downloading converted audio must preserve the original playing element');
   select('video'); await until(() => page('video').querySelector('video')?.readyState >= 1);
   const video = page('video').querySelector('video'); video.loop = true;
   page('video').querySelector('.media-play').click(); await until(() => !video.paused && audio.paused);

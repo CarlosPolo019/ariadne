@@ -133,5 +133,12 @@
   "history.linkedMeetingWaiting": "Esperando la grabación solicitada…",
   "history.linkedMeetingNotFound": "La grabación solicitada aún no está disponible en el historial.",
   "history.searchingTranscripts": "Buscando en transcripciones…",
-  "history.transcriptSearchError": "No se pudieron consultar algunas transcripciones."
+  "history.transcriptSearchError": "No se pudieron consultar algunas transcripciones.",
+  "history.downloadFormats": "Formato de descarga",
+  "history.downloadOption.txt": "Texto (.txt)",
+  "history.downloadOption.md": "Markdown (.md)",
+  "history.downloadOption.json": "JSON (.json)",
+  "history.downloadSelectedFormat": "Descargar {{format}}",
+  "history.downloadFormatSaveError": "No se pudo recordar el formato. Puedes descargarlo igualmente.",
+  "history.downloadFileError": "No se pudo descargar el archivo. Inténtalo de nuevo."
 }

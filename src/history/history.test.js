@@ -31,7 +31,7 @@ globalThis.chrome = {
   downloads: { download: () => {}, onChanged: { addListener: () => {}, removeListener: () => {} } },
 };
 globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true, json: async () => Object.fromEntries(
-  ["untitledMeeting", "transcript", "audio", "video", "manifest"].map(key => [`common.${key}`, en[`common.${key}`]])
+  [... ["untitledMeeting", "transcript", "audio", "video", "manifest"].map(key => [`common.${key}`, en[`common.${key}`]]), ...Object.entries(en).filter(([key]) => key.startsWith("history.download"))]
 ) }));
 
 const { deriveVisibleMeetings } = await import("./history.js");
@@ -210,7 +210,7 @@ it('names every download using the meeting title, file type and actual extension
   historyChanged({ meetingHistory: { newValue: [updated] } }, 'local');
   chrome.downloads.download = vi.fn();
   for (const [tab, extensions, type] of [
-    ['transcript', ['json', 'txt', 'md'], 'transcript'],
+    ['transcript', ['txt', 'md', 'json'], 'transcript'],
     ['audio', ['mp3'], 'audio'],
     ['video', ['mp4'], 'video'],
     ['manifest', ['json'], 'manifest'],
@@ -218,12 +218,16 @@ it('names every download using the meeting title, file type and actual extension
     select(tab);
     await vi.waitFor(() => expect(page(tab).querySelector('.detail-footer')).toBeTruthy());
     expect(page(tab).querySelector('.detail-file-name').textContent).toBe(`reunion-sobre-algo-${type}.${extensions[0]}`);
-    const actions = page(tab).querySelectorAll('.detail-action');
-    extensions.forEach((extension, index) => {
-      actions[index + 1].click();
-      expect(chrome.downloads.download).toHaveBeenLastCalledWith(
-        expect.objectContaining({ filename: `reunion-sobre-algo-${type}.${extension}` }), expect.any(Function));
-    });
+    expect(page(tab).querySelector('[aria-label="Open"]')).toBeNull();
+    for (const extension of extensions) {
+      if (tab === 'transcript') {
+        page(tab).querySelector('.split-trigger').click();
+        [...document.querySelectorAll('[role="menuitemradio"]')].find(item => item.textContent.includes(`.${extension}`)).click();
+      } else page(tab).querySelector('.split-primary').click();
+      await vi.waitFor(() => expect(chrome.downloads.download).toHaveBeenLastCalledWith(
+        expect.objectContaining({ filename: `reunion-sobre-algo-${type}.${extension}` }), expect.any(Function)));
+      expect(page(tab).querySelector('.detail-file-name').textContent).toBe(`reunion-sobre-algo-${type}.${extension}`);
+    }
   }
   for (const tab of ['audio', 'video']) {
     await folder.removeEntry(`${tab}-reunion.${tab === 'audio' ? 'mp3' : 'mp4'}`);
@@ -232,10 +236,48 @@ it('names every download using the meeting title, file type and actual extension
   for (const tab of ['audio', 'video']) {
     select(tab);
     await vi.waitFor(() => expect(page(tab).querySelector('.detail-file-name').textContent).toBe(`reunion-sobre-algo-${tab}.webm`));
-    page(tab).querySelectorAll('.detail-action')[1].click();
-    expect(chrome.downloads.download).toHaveBeenLastCalledWith(
-      expect.objectContaining({ filename: `reunion-sobre-algo-${tab}.webm` }), expect.any(Function));
+    page(tab).querySelector('.split-primary').click();
+    await vi.waitFor(() => expect(chrome.downloads.download).toHaveBeenLastCalledWith(
+      expect.objectContaining({ filename: `reunion-sobre-algo-${tab}.webm` }), expect.any(Function)));
   }
+});
+
+it('remembers formats, synchronizes them and downloads even when preference persistence fails', async () => {
+  const { page } = await openFixture('format-preference');
+  historyChanged({ transcriptDownloadFormat: { newValue: 'invalid' } }, 'local');
+  expect(page('transcript').querySelector('.split-primary').textContent).toContain('TXT');
+  chrome.storage.local.set = vi.fn().mockRejectedValue(new Error('Cannot save'));
+  chrome.downloads.download = vi.fn();
+  page('transcript').querySelector('.split-trigger').click();
+  [...document.querySelectorAll('[role="menuitemradio"]')].find(item => item.textContent.includes('.md')).click();
+  await vi.waitFor(() => expect(page('transcript').querySelector('.download-feedback').textContent).toContain('could not be remembered'));
+  expect(chrome.storage.local.set).toHaveBeenCalledWith({ transcriptDownloadFormat: 'md' });
+  expect(chrome.downloads.download).toHaveBeenCalledWith(expect.objectContaining({ filename: 'weekly-sync-transcript.md' }), expect.any(Function));
+  expect(page('transcript').querySelector('.split-primary').textContent).toContain('MD');
+  const exported = URL.createObjectURL.mock.calls.at(-1)[0];
+  const content = exported.text ? await exported.text() : await new Promise(resolve => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.readAsText(exported); });
+  expect(content).toContain('# Weekly sync'); expect(content).toContain('Persistent transcript');
+  expect(page('transcript').querySelector('.detail-file-size').textContent).toBe(`${exported.size} B`);
+  historyChanged({ transcriptDownloadFormat: { newValue: 'json' } }, 'local');
+  expect(page('transcript').querySelector('.split-primary').textContent).toContain('JSON');
+  expect(page('transcript').querySelector('.download-feedback').textContent).toBe('');
+  chrome.storage.local.set = vi.fn().mockResolvedValue(undefined);
+  historyChanged({ transcriptDownloadFormat: { newValue: 'txt' } }, 'local');
+});
+
+it('downloads newly converted media while the original player continues running', async () => {
+  const { page, select, entry, root } = await openFixture('download-during-play');
+  select('audio'); await vi.waitFor(() => expect(page('audio').querySelector('audio')).toBeTruthy());
+  const audio = page('audio').querySelector('audio'); page('audio').querySelector('.media-play').click(); await Promise.resolve();
+  const folder = await root.getDirectoryHandle(entry.folderName);
+  const writable = await (await folder.getFileHandle('audio-reunion.mp3', { create: true })).createWritable(); await writable.write('converted'); await writable.close();
+  historyChanged({ meetingHistory: { newValue: [{ ...entry, hasAudioMp3: true }] } }, 'local');
+  chrome.downloads.download = vi.fn(); page('audio').querySelector('.split-primary').click();
+  await vi.waitFor(() => expect(chrome.downloads.download).toHaveBeenCalledWith(expect.objectContaining({ filename: 'weekly-sync-audio.mp3' }), expect.any(Function)));
+  expect(page('audio').querySelector('audio')).toBe(audio); expect(audio.paused).toBe(false);
+  const empty = await (await folder.getFileHandle('audio-reunion.mp3')).createWritable(); await empty.close();
+  page('audio').querySelector('.split-primary').click();
+  await vi.waitFor(() => expect(chrome.downloads.download).toHaveBeenLastCalledWith(expect.objectContaining({ filename: 'weekly-sync-audio.webm' }), expect.any(Function)));
 });
 
 it('keeps mounted pages, independent scroll, media state and file-specific actions', async () => {
@@ -260,9 +302,10 @@ it('keeps mounted pages, independent scroll, media state and file-specific actio
   select('transcript'); select('manifest'); select('audio');
   expect(getDirectory).toHaveBeenCalledTimes(reads);
   chrome.downloads.download = vi.fn();
-  page('audio').querySelectorAll('.detail-action')[1].click();
-  expect(chrome.downloads.download.mock.calls[0][0].filename).toBe('weekly-sync-audio.webm');
-  expect(transcript.querySelectorAll('.detail-action')).toHaveLength(4);
+  page('audio').querySelector('.split-primary').click();
+  await vi.waitFor(() => expect(chrome.downloads.download.mock.calls[0][0].filename).toBe('weekly-sync-audio.webm'));
+  expect(transcript.querySelectorAll('.split-primary')).toHaveLength(1);
+  expect(transcript.querySelectorAll('.detail-action')).toHaveLength(0);
   document.querySelector('.meeting-card.is-selected').click();
   expect(page('audio').querySelector('audio')).toBe(audio); expect(audio.paused).toBe(false);
 });

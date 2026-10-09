@@ -133,5 +133,12 @@
   "history.linkedMeetingWaiting": "Waiting for the requested recording…",
   "history.linkedMeetingNotFound": "The requested recording is not available in history yet.",
   "history.searchingTranscripts": "Searching transcripts…",
-  "history.transcriptSearchError": "Some transcripts could not be searched."
+  "history.transcriptSearchError": "Some transcripts could not be searched.",
+  "history.downloadFormats": "Download format",
+  "history.downloadOption.txt": "Text (.txt)",
+  "history.downloadOption.md": "Markdown (.md)",
+  "history.downloadOption.json": "JSON (.json)",
+  "history.downloadSelectedFormat": "Download {{format}}",
+  "history.downloadFormatSaveError": "The format could not be remembered. You can still download it.",
+  "history.downloadFileError": "The file could not be downloaded. Try again."
 }

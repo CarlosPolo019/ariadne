@@ -59,6 +59,12 @@ try {
       await writeFile(join(process.env.HISTORY_SCREENSHOT_DIR, `history-playing-${locale}-${theme}.png`), Buffer.from(playing.data, 'base64'));
     }
   }
+  await call('Emulation.setDeviceMetricsOverride', { width: 360, height: 640, deviceScaleFactor: 1, mobile: false });
+  await call('Page.navigate', { url: `${url}/tests/browser/split-button.html` });
+  const narrow = await call('Runtime.evaluate', { expression: `(async()=>{const end=Date.now()+8000;while(!window.runSplitButtonLayoutTest){if(Date.now()>end)throw Error('Split button did not load');await new Promise(r=>setTimeout(r,20));}return window.runSplitButtonLayoutTest();})()`, awaitPromise:true, returnByValue:true });
+  if (narrow.exceptionDetails) throw new Error(JSON.stringify(narrow.exceptionDetails));
+  results.push(narrow.result.value);
+  await call('Emulation.setDeviceMetricsOverride', { width: 1600, height: 1000, deviceScaleFactor: 1, mobile: false });
   for (const locale of ['en', 'es', 'fr']) for (const theme of ['dark', 'light']) {
     await call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }, { name: 'prefers-reduced-motion', value: theme === 'light' ? 'reduce' : 'no-preference' }] });
     await call('Page.navigate', { url: `${url}/src/settings/settings.html?locale=${locale}&theme=${theme}` });

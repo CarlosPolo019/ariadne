@@ -4,6 +4,7 @@ import { formatSegmentTimestamp, transcriptToTxt, transcriptToMarkdown } from ".
 import { meetingDownloadFilename } from "../lib/download-filename.js";
 import { initI18n } from "../shared/i18n/i18n.js";
 import { createTranscriptSearch } from "./transcript-search.js";
+import { createSplitButton } from "../shared/split-button.js";
 
 const { t, localeTag } = await initI18n();
 document.title = t("history.pageTitle");
@@ -21,6 +22,8 @@ let linkedSessionStatus = "waiting";
 let detailSession = null;
 let nextDetailId = 0;
 let debugLogging = false;
+let transcriptDownloadFormat = "txt", formatSaveError = "", formatVersion = 0;
+const normalizeDownloadFormat = value => ["txt", "md", "json"].includes(value) ? value : "txt";
 let detailShell, meetingRegion, meetingFooter, deleteMeetingButton, meetingAnimation;
 let openMoreMenu = null;
 const pendingDeletes = new Set();
@@ -60,9 +63,6 @@ function downloadFile(file, suggestedName) {
   });
 }
 
-function viewFile(file) {
-  chrome.tabs.create({ url: URL.createObjectURL(file) });
-}
 
 const state = {
   meetings: [], search: "",
@@ -245,6 +245,7 @@ function createMeetingCard(meeting) {
     const wasOpen = more.classList.contains("is-open");
     closeOpenMoreMenu(false, true);
     if (wasOpen) return;
+    closeDownloadMenus();
     more.classList.add("is-open"); more.setAttribute("aria-expanded", "true");
     const menu = document.createElement("div"); menu.className = "more-menu"; menu.setAttribute("role", "menu");
     const deleteItem = document.createElement("button"); deleteItem.type = "button"; deleteItem.className = "more-menu-item"; deleteItem.setAttribute("role", "menuitem");
@@ -305,28 +306,79 @@ async function readActiveFile(meeting, tab) {
     return { file, name: preferred };
   } catch { return { file: await (await directory.getFileHandle(fallback)).getFile(), name: fallback }; }
 }
+function closeDownloadMenus() {
+  for (const page of detailSession?.pages.values() ?? []) page.footer?.downloadButton?.close(false, true);
+}
+function refreshDownloadFooters() {
+  for (const page of detailSession?.pages.values() ?? []) page.footer?.updateDownload?.();
+}
+function rememberDownloadFormat(format) {
+  transcriptDownloadFormat = format; formatSaveError = "";
+  const version = ++formatVersion;
+  refreshDownloadFooters();
+  Promise.resolve().then(() => chrome.storage.local.set({ transcriptDownloadFormat: format })).catch(() => {
+    if (version !== formatVersion) return;
+    formatSaveError = t("history.downloadFormatSaveError"); refreshDownloadFooters();
+  });
+}
 function createFileFooter(activeFile, meeting, tab) {
-  const downloadName = extension => {
-    const currentMeeting = state.meetings.find(entry => meetingId(entry) === meetingId(meeting)) ?? meeting;
-    return meetingDownloadFilename(currentMeeting.meetingTitle, t(`common.${tab}`), extension, t("common.untitledMeeting"));
-  };
+  const currentMeeting = () => state.meetings.find(entry => meetingId(entry) === meetingId(meeting)) ?? meeting;
+  const downloadName = extension => meetingDownloadFilename(currentMeeting().meetingTitle, t(`common.${tab}`), extension, t("common.untitledMeeting"));
   const footer = document.createElement("footer"); footer.className = "detail-footer";
   const fileRow = document.createElement("div"); fileRow.className = "detail-file-row";
-  const metadata = document.createElement("div"); metadata.className = "detail-file-meta"; const name = document.createElement("span"); name.className = "detail-file-name"; name.textContent = downloadName(activeFile.name.split(".").pop()); const size = document.createElement("span"); size.className = "detail-file-size"; size.textContent = formatFileSize(activeFile.file.size); metadata.append(name, size);
+  const metadata = document.createElement("div"); metadata.className = "detail-file-meta";
+  const name = document.createElement("span"); name.className = "detail-file-name";
+  const size = document.createElement("span"); size.className = "detail-file-size"; metadata.append(name, size);
   const actions = document.createElement("div"); actions.className = "detail-file-actions";
-  const view = document.createElement("button"); view.type = "button"; view.className = "detail-action"; view.innerHTML = `${icon("external-link", { size: 12, color: "currentColor" })}<span>${t("common.open")}</span>`; view.addEventListener("click", () => viewFile(activeFile.file));
-  const download = document.createElement("button"); download.type = "button"; download.className = "detail-action"; download.innerHTML = `${icon("download", { size: 12, color: "currentColor" })}<span>${t("common.download")}</span>`; download.addEventListener("click", () => downloadFile(activeFile.file, downloadName(activeFile.name.split(".").pop())));
-  actions.append(view, download);
-  if (tab === "transcript") {
-    const downloadTxt = document.createElement("button"); downloadTxt.type = "button"; downloadTxt.className = "detail-action"; downloadTxt.innerHTML = `${icon("download", { size: 12, color: "currentColor" })}<span>${t("history.downloadTxt")}</span>`;
-    downloadTxt.addEventListener("click", () => downloadFile(new Blob([transcriptToTxt(activeFile.value)], { type: "text/plain" }), downloadName("txt")));
-    const downloadMd = document.createElement("button"); downloadMd.type = "button"; downloadMd.className = "detail-action"; downloadMd.innerHTML = `${icon("download", { size: 12, color: "currentColor" })}<span>${t("history.downloadMarkdown")}</span>`;
-    downloadMd.addEventListener("click", () => downloadFile(new Blob([transcriptToMarkdown(activeFile.value, titleFor(meeting))], { type: "text/markdown" }), downloadName("md")));
-    actions.append(downloadTxt, downloadMd);
+  const feedback = document.createElement("p"); feedback.className = "download-feedback"; feedback.setAttribute("role", "status");
+  let prepared = activeFile, revision = null, request = 0;
+  function prepareTranscript(format) {
+    if (format === "json") return activeFile;
+    return { file: new Blob([format === "md" ? transcriptToMarkdown(activeFile.value, titleFor(currentMeeting())) : transcriptToTxt(activeFile.value)],
+      { type: format === "md" ? "text/markdown" : "text/plain" }), name: `transcript.${format}` };
   }
-  fileRow.append(metadata, actions); footer.append(fileRow); return footer;
+  function updateMetadata() {
+    name.textContent = downloadName(prepared.name.split(".").pop()); size.textContent = formatFileSize(prepared.file.size);
+  }
+  async function download(format = transcriptDownloadFormat) {
+    button.setDisabled(true); feedback.textContent = "";
+    try {
+      const target = tab === "transcript" ? prepareTranscript(format) : ["audio", "video"].includes(tab) ? await readActiveFile(currentMeeting(), tab) : activeFile;
+      if (detailSession?.meetingId !== meetingId(meeting) || !state.meetings.some(item => meetingId(item) === meetingId(meeting))) return;
+      prepared = target; updateMetadata();
+      downloadFile(target.file, downloadName(target.name.split(".").pop()));
+    } catch { if (footer.isConnected) feedback.textContent = t("history.downloadFileError"); }
+    finally { button.setDisabled(false); }
+  }
+  const button = createSplitButton({ label: t("common.download"), iconHtml: icon("download", { size: 12, color: "currentColor" }),
+    menuLabel: t("history.downloadFormats"), value: transcriptDownloadFormat,
+    options: tab === "transcript" ? ["txt", "md", "json"].map(value => ({ value, label: t(`history.downloadOption.${value}`) })) : [],
+    onOpen: () => closeOpenMoreMenu(false, true), onAction: () => void download(),
+    onSelect: format => { rememberDownloadFormat(format); void download(format); } });
+  footer.downloadButton = button;
+  footer.updateDownload = () => {
+    if (tab === "transcript") {
+      prepared = prepareTranscript(transcriptDownloadFormat);
+      button.setLabel(t("history.downloadSelectedFormat", { format: transcriptDownloadFormat.toUpperCase() }));
+      button.setValue(transcriptDownloadFormat); feedback.textContent = formatSaveError;
+    } else if (["audio", "video"].includes(tab)) {
+      const nextRevision = `${currentMeeting().folderName}:${fileRevision(currentMeeting(), tab)}`;
+      if (nextRevision !== revision) {
+        revision = nextRevision; const token = ++request;
+        readActiveFile(currentMeeting(), tab).then(target => {
+          if (!footer.isConnected || token !== request) return;
+          prepared = target; updateMetadata();
+        }).catch(() => {});
+      }
+    }
+    updateMetadata();
+  };
+  actions.append(button.element); fileRow.append(metadata, actions); footer.append(fileRow, feedback);
+  footer.updateDownload(); return footer;
 }
+
 function disposePage(page) {
+  page.footer?.downloadButton?.destroy();
   page.tabMotion?.forEach(animation => animation.cancel());
   page.markerMotion?.cancel();
   page.tab.querySelectorAll('.is-exiting').forEach(marker => marker.remove());
@@ -530,6 +582,7 @@ function loadPage(session, page) {
   return page.pending;
 }
 function selectPage(session, key, immediate = false, visit = true) {
+  closeDownloadMenus();
   state.selectedTab = key;
   const pages = [...session.pages.values()];
   for (const page of pages) {
@@ -589,10 +642,7 @@ function syncDetail(session, meeting) {
       page.revision = fileRevision(meeting, key); page.dirty = true;
       if (key !== "audio" && key !== "video" && page.file) loadPage(session, page);
     } else if (!page.file && previous !== meeting) page.dirty = true;
-    if (page.footer && page.file) {
-      page.footer.querySelector(".detail-file-name").textContent = meetingDownloadFilename(
-        meeting.meetingTitle, t(`common.${key}`), page.file.name.split(".").pop(), t("common.untitledMeeting"));
-    }
+    page.footer?.updateDownload?.();
     ordered.set(key, page);
   }
   session.pages = ordered;
@@ -740,7 +790,12 @@ function renderAllExceptDetail() { transcriptSearch.update(state.meetings, state
 searchInput.addEventListener("input", () => { state.search = searchInput.value; transcriptSearch.update(state.meetings, state.search, { retryErrors: true }); renderAllExceptDetail(); });
 sortSelect.addEventListener("change", () => { state.sort = sortSelect.value; renderMeetings(); });
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "local" || (!changes.meetingHistory && !changes.debugLogging)) return;
+  if (areaName !== "local") return;
+  if (changes.transcriptDownloadFormat) {
+    transcriptDownloadFormat = normalizeDownloadFormat(changes.transcriptDownloadFormat.newValue);
+    formatVersion++; formatSaveError = ""; refreshDownloadFooters();
+  }
+  if (!changes.meetingHistory && !changes.debugLogging) return;
   if (changes.debugLogging) debugLogging = changes.debugLogging.newValue === true;
   if (changes.meetingHistory) state.meetings = Array.isArray(changes.meetingHistory.newValue) ? changes.meetingHistory.newValue : [];
   const selected = state.meetings.find(meeting => meetingId(meeting) === state.selectedMeetingId);
@@ -762,7 +817,8 @@ function selectLinkedMeeting() {
   return true;
 }
 
-chrome.storage.local.get({ meetingHistory: [], debugLogging: false }, ({ meetingHistory, debugLogging: debugEnabled }) => {
+chrome.storage.local.get({ meetingHistory: [], debugLogging: false, transcriptDownloadFormat: "txt" }, ({ meetingHistory, debugLogging: debugEnabled, transcriptDownloadFormat: savedFormat }) => {
+  transcriptDownloadFormat = normalizeDownloadFormat(savedFormat);
   debugLogging = debugEnabled === true;
   state.meetings = Array.isArray(meetingHistory) ? meetingHistory : [];
   renderAllExceptDetail();

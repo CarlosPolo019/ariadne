@@ -10,7 +10,7 @@ const meeting = sessionId => ({ sessionId, folderName: `folder-${sessionId}`, me
   audioConversionStatus: "skipped", transcriptExportStatus: "skipped", videoConversionStatus: "skipped" });
 let changed;
 const documentListeners = [];
-async function setup({ entries = [], target = "target", recovery = Promise.resolve({}) } = {}) {
+async function setup({ entries = [], target = "target", recovery = Promise.resolve({}), format = "txt" } = {}) {
   vi.resetModules(); vi.useFakeTimers();
   window.history.replaceState({}, "", `/?sessionId=${encodeURIComponent(target)}`);
   document.body.innerHTML = new DOMParser().parseFromString(page, "text/html").body.innerHTML;
@@ -20,7 +20,7 @@ async function setup({ entries = [], target = "target", recovery = Promise.resol
   });
   globalThis.chrome = {
     runtime: { getURL: path => path, sendMessage: vi.fn(message => message.type === "asterion:recover-storage" ? recovery : Promise.resolve({})) },
-    storage: { local: { get: (defaults, callback) => callback({ ...defaults, meetingHistory: entries }) },
+    storage: { local: { get: (defaults, callback) => callback({ ...defaults, meetingHistory: entries, transcriptDownloadFormat: format }) },
       onChanged: { addListener: callback => { changed = callback; } } },
   };
   globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => en }));
@@ -35,6 +35,18 @@ afterEach(() => {
 });
 
 describe("history session links", () => {
+  it("restores the saved transcript format on initial history loading", async () => {
+    const { MemoryDirectoryHandle } = await import('../../tests/helpers/memory-opfs.js');
+    const root = new MemoryDirectoryHandle('root');
+    const folder = await root.getDirectoryHandle('folder-target', { create: true });
+    const writable = await (await folder.getFileHandle('transcripcion.json', { create: true })).createWritable();
+    await writable.write(JSON.stringify([{ speaker: 'Ana', startTime: 0, text: 'Saved transcript' }])); await writable.close();
+    Object.defineProperty(navigator, 'storage', { configurable: true, value: { getDirectory: async () => root } });
+    await setup({ entries: [{ ...meeting('target'), hasTranscript: true }], format: 'md' });
+    await flush();
+    expect(document.querySelector('.split-primary').textContent).toContain('MD');
+    expect(document.querySelector('.detail-file-name').textContent).toBe('meeting-target-transcript.md');
+  });
   it("selects and opens the requested recording instead of the newest", async () => {
     await setup({ entries: [meeting("newest"), meeting("target")] });
     expect(selectedId()).toBe("target");
