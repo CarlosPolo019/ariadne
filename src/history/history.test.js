@@ -49,6 +49,17 @@ function meeting(overrides) {
 }
 
 describe("deriveVisibleMeetings", () => {
+  it("matches title OR literal transcript fragments with existing filters and ordering", () => {
+    const items = [meeting({ sessionId: "1", meetingTitle: "Instant meeting" }), meeting({ sessionId: "2", meetingTitle: "OLA" })];
+    const current = { meetings: items, search: " OLA ", filters: {}, sort: "newest", selectedDay: null,
+      transcriptSearch: { textFor: () => "las olas café [precio]. entre segmentos" } };
+    expect(deriveVisibleMeetings(current)).toHaveLength(2);
+    current.search = "[PRECIO]."; expect(deriveVisibleMeetings(current)).toHaveLength(2);
+    current.search = "entre segmentos"; expect(deriveVisibleMeetings(current)).toHaveLength(2);
+    current.search = "cafe"; expect(deriveVisibleMeetings(current)).toHaveLength(0);
+    current.search = "ola"; current.filters.video = true; expect(deriveVisibleMeetings(current)).toHaveLength(0);
+    current.filters = {}; current.selectedDay = new Date("2000-01-01"); expect(deriveVisibleMeetings(current)).toHaveLength(0);
+  });
   it("filters by search text (case/locale-insensitive)", () => {
     const state = { meetings: [meeting({ meetingTitle: "Café con equipo" })], search: "CAFÉ", filters: {}, sort: "newest", selectedDay: null };
     expect(deriveVisibleMeetings(state)).toHaveLength(1);
@@ -65,6 +76,35 @@ describe("deriveVisibleMeetings", () => {
     const state = { meetings: [newer, older], search: "", filters: {}, sort: "oldest", selectedDay: null };
     expect(deriveVisibleMeetings(state).map((m) => m.sessionId)).toEqual(["old", "new"]);
   });
+});
+
+it("shows title matches while reading, searches saved content, and clears errors on the next query", async () => {
+  const { MemoryDirectoryHandle } = await import("../../tests/helpers/memory-opfs.js");
+  const root = new MemoryDirectoryHandle("search-root");
+  const folder = await root.getDirectoryHandle("search-folder", { create: true });
+  const file = await folder.getFileHandle("transcripcion.json", { create: true });
+  const writer = await file.createWritable(); await writer.write(JSON.stringify([{ text: "Las OLAS", speaker: "Only speaker" }, { text: "son grandes." }])); await writer.close();
+  let release;
+  const delayed = new Promise(resolve => { release = resolve; });
+  Object.defineProperty(navigator, "storage", { configurable: true, value: { getDirectory: async () => { await delayed; return root; } } });
+  const items = [meeting({ sessionId: "content-match", folderName: "search-folder", meetingTitle: "Instant meeting" }),
+    meeting({ sessionId: "title-match", folderName: "absent", meetingTitle: "Olas", hasTranscript: false })];
+  historyChanged({ meetingHistory: { newValue: items } }, "local");
+  const input = document.getElementById("search-input");
+  const search = value => { input.value = value; input.dispatchEvent(new Event("input")); };
+  search("ola");
+  expect(document.querySelectorAll(".meeting-card")).toHaveLength(1);
+  expect(document.getElementById("meetings-list").getAttribute("aria-busy")).toBe("true");
+  search("olas son"); release();
+  await vi.waitFor(() => expect(document.querySelector(".meeting-card")?.dataset.meetingId).toBe("content-match"));
+  search("Only speaker"); expect(document.querySelectorAll(".meeting-card")).toHaveLength(0);
+  historyChanged({ meetingHistory: { newValue: [...items, meeting({ sessionId: "missing", folderName: "missing", meetingTitle: "Fallback title" })] } }, "local");
+  search("fallback");
+  await vi.waitFor(() => expect(document.getElementById("results-count").textContent).toContain("history.transcriptSearchError"));
+  expect(document.querySelector(".meeting-card")?.dataset.meetingId).toBe("missing");
+  search(""); expect(document.querySelectorAll(".meeting-card")).toHaveLength(3);
+  expect(document.getElementById("results-count").textContent).not.toContain("history.transcriptSearchError");
+  historyChanged({ meetingHistory: { newValue: [] } }, "local");
 });
 
 it("renders recovery states, deduplicates retry, and preserves content on progress updates", async () => {

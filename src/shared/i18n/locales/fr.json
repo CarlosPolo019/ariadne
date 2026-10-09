@@ -47,7 +47,7 @@
   "history.pageHeading": "Historique",
   "history.pageDescription": "Réunions enregistrées localement sur cet appareil.",
   "history.filtersAsideAria": "Filtres de l'historique",
-  "history.searchPlaceholder": "Rechercher par titre",
+  "history.searchPlaceholder": "Rechercher dans les titres et les transcriptions",
   "history.filtersLabel": "Filtres",
   "history.calendarAria": "Calendrier",
   "history.summaryLabel": "Résumé",
@@ -131,5 +131,7 @@
   "banner.captureErrorCopy": "Consultez son état et les options de récupération dans l’historique.",
   "banner.openHistoryError": "Impossible d’ouvrir l’historique. Réessayez.",
   "history.linkedMeetingWaiting": "En attente de l’enregistrement demandé…",
-  "history.linkedMeetingNotFound": "L’enregistrement demandé n’est pas encore disponible dans l’historique."
+  "history.linkedMeetingNotFound": "L’enregistrement demandé n’est pas encore disponible dans l’historique.",
+  "history.searchingTranscripts": "Recherche dans les transcriptions…",
+  "history.transcriptSearchError": "Certaines transcriptions n’ont pas pu être consultées."
 }

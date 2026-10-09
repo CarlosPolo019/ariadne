@@ -47,7 +47,7 @@
   "history.pageHeading": "Historial",
   "history.pageDescription": "Reuniones guardadas localmente en este dispositivo.",
   "history.filtersAsideAria": "Filtros del historial",
-  "history.searchPlaceholder": "Buscar por título",
+  "history.searchPlaceholder": "Buscar en títulos y transcripciones",
   "history.filtersLabel": "Filtros",
   "history.calendarAria": "Calendario",
   "history.summaryLabel": "Resumen",
@@ -131,5 +131,7 @@
   "banner.captureErrorCopy": "Revisa su estado y las opciones de recuperación en el historial.",
   "banner.openHistoryError": "No pudimos abrir el historial. Inténtalo de nuevo.",
   "history.linkedMeetingWaiting": "Esperando la grabación solicitada…",
-  "history.linkedMeetingNotFound": "La grabación solicitada aún no está disponible en el historial."
+  "history.linkedMeetingNotFound": "La grabación solicitada aún no está disponible en el historial.",
+  "history.searchingTranscripts": "Buscando en transcripciones…",
+  "history.transcriptSearchError": "No se pudieron consultar algunas transcripciones."
 }

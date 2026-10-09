@@ -47,7 +47,7 @@
   "history.pageHeading": "History",
   "history.pageDescription": "Meetings saved locally on this device.",
   "history.filtersAsideAria": "History filters",
-  "history.searchPlaceholder": "Search by title",
+  "history.searchPlaceholder": "Search titles and transcripts",
   "history.filtersLabel": "Filters",
   "history.calendarAria": "Calendar",
   "history.summaryLabel": "Summary",
@@ -131,5 +131,7 @@
   "banner.captureErrorCopy": "Check its status and recovery options in history.",
   "banner.openHistoryError": "Could not open history. Please try again.",
   "history.linkedMeetingWaiting": "Waiting for the requested recording…",
-  "history.linkedMeetingNotFound": "The requested recording is not available in history yet."
+  "history.linkedMeetingNotFound": "The requested recording is not available in history yet.",
+  "history.searchingTranscripts": "Searching transcripts…",
+  "history.transcriptSearchError": "Some transcripts could not be searched."
 }

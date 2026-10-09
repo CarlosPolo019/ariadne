@@ -228,6 +228,18 @@ export async function runExtensionIntegration({ root, debuggerUrl, origin, resta
       await wait(100);
     }
     assert(linkedSelected===lifecycleStatus.sessionId,'The real history page selects the linked session after publication');
+    await linkedPage.evaluate(`(()=>{const input=document.getElementById('search-input');input.value='PRIMERA COMPLETA';input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    let searchMatches;
+    for (let attempt=0;attempt<100;attempt++) {
+      searchMatches=await linkedPage.evaluate(`({busy:document.getElementById('meetings-list').getAttribute('aria-busy'),ids:[...document.querySelectorAll('.meeting-card')].map(card=>card.dataset.meetingId)})`);
+      if(searchMatches.busy==='false') break;
+      await wait(50);
+    }
+    assert(searchMatches.ids.includes(sessionId),'Chrome history finds spoken content with different case');
+    const searchedTitle=history.meetingHistory.find(entry=>entry.sessionId===sessionId).meetingTitle??folderName;
+    assert(!searchedTitle.toLocaleLowerCase().includes('primera completa'),'The content search matches independently of the meeting title');
+    await linkedPage.evaluate(`(()=>{const input=document.getElementById('search-input');input.value='';input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    console.log(JSON.stringify({historyContentSearch:{ok:true,sessionId,query:'PRIMERA COMPLETA'}},null,2));
     await wait(200);
     assert(await page.evaluate(`${widget}.getElementById('content').hidden`),'Opening history dismisses the departure notice');
     await page.evaluate(`document.querySelector('i').hidden=false`);

@@ -3,6 +3,7 @@ import { icon } from "../shared/icons.js";
 import { formatSegmentTimestamp, transcriptToTxt, transcriptToMarkdown } from "../lib/transcript-export.js";
 import { meetingDownloadFilename } from "../lib/download-filename.js";
 import { initI18n } from "../shared/i18n/i18n.js";
+import { createTranscriptSearch } from "./transcript-search.js";
 
 const { t, localeTag } = await initI18n();
 document.title = t("history.pageTitle");
@@ -67,6 +68,11 @@ const state = {
   filters: { transcript: false, video: false, audioOnly: false, thisMonth: false, thisYear: false },
   calendarMonth: startOfMonth(new Date()), selectedDay: null, sort: "newest", selectedMeetingId: null, selectedTab: null,
 };
+const transcriptSearch = createTranscriptSearch({
+  read: async meeting => (await readActiveFile(meeting, "transcript")).value,
+  onChange: () => renderMeetings(),
+});
+state.transcriptSearch = transcriptSearch;
 
 const FILTERS = () => [["all", t("history.filterAll")], ["transcript", t("history.filterTranscript")], ["video", t("history.filterVideo")], ["audioOnly", t("history.filterAudioOnly")], ["thisMonth", t("history.filterThisMonth")], ["thisYear", t("history.filterThisYear")]];
 
@@ -94,7 +100,8 @@ export function deriveVisibleMeetings(currentState) {
   const visible = currentState.meetings.filter((meeting) => {
     const startedAt = new Date(meeting.startedAt);
     if (Number.isNaN(startedAt.getTime())) return false;
-    if (normalizedSearch && !titleFor(meeting).toLocaleLowerCase().includes(normalizedSearch)) return false;
+    if (normalizedSearch && !titleFor(meeting).toLocaleLowerCase().includes(normalizedSearch)
+      && !currentState.transcriptSearch?.textFor(meeting).includes(normalizedSearch)) return false;
     if (transcript && !meeting.hasTranscript) return false;
     if (video && !meeting.hasVideo) return false;
     if (audioOnly && meeting.hasVideo) return false;
@@ -189,7 +196,15 @@ function renderKpis() {
 function renderMeetings() {
   closeOpenMoreMenu(false, true);
   const meetings = deriveVisibleMeetings(state); resultsCountEl.textContent = t("history.resultsCount", { count: meetings.length }); meetingsListEl.replaceChildren();
-  if (!meetings.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = t("history.emptyState"); meetingsListEl.appendChild(empty); return; }
+  const { pending, failed } = transcriptSearch.status();
+  resultsCountEl.setAttribute("aria-live", "polite");
+  if (pending) resultsCountEl.textContent += ` · ${t("history.searchingTranscripts")}`;
+  if (failed) resultsCountEl.textContent += ` · ${t("history.transcriptSearchError")}`;
+  meetingsListEl.setAttribute("aria-busy", String(pending));
+  if (!meetings.length && !pending && !failed) {
+    const empty = document.createElement("p"); empty.className = "empty-state";
+    empty.textContent = t("history.emptyState"); meetingsListEl.appendChild(empty);
+  }
   meetings.forEach((meeting) => meetingsListEl.appendChild(createMeetingCard(meeting)));
 }
 
@@ -678,9 +693,9 @@ function showDeleteDialog(meeting, opener) {
   confirm.dataset.meetingId = meetingId(meeting);
   document.addEventListener("keydown", onKeydown); cancel.focus();
 }
-function renderAllExceptDetail() { renderSidebar(); renderMeetings(); }
+function renderAllExceptDetail() { transcriptSearch.update(state.meetings, state.search); renderSidebar(); renderMeetings(); }
 
-searchInput.addEventListener("input", () => { state.search = searchInput.value; renderAllExceptDetail(); });
+searchInput.addEventListener("input", () => { state.search = searchInput.value; transcriptSearch.update(state.meetings, state.search, { retryErrors: true }); renderAllExceptDetail(); });
 sortSelect.addEventListener("change", () => { state.sort = sortSelect.value; renderMeetings(); });
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local" || !changes.meetingHistory) return;
