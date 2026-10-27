@@ -63,7 +63,7 @@ async function ensureOffscreenDocument() {
       .createDocument({
         url: OFFSCREEN_URL,
         reasons: ["BLOBS"],
-        justification: "Escribir localmente el audio, video y transcripción de una reunión de Meet.",
+        justification: "Escribir localmente el audio, video y transcripción de una reunión de Meet o Teams.",
       })
       .finally(() => {
         offscreenCreationPromise = null;

@@ -1,13 +1,12 @@
-import { observeLocalIdentity } from "./meet-local-identity.js";
+import { getMeetingPlatform } from "./meeting-platform.js";
 import { CaptionDelivery } from "./caption-delivery.js";
 import { CaptionRouter } from "./caption-router.js";
 // src/content/meet-detector.js
-import { findByIconText } from "./meet-selectors.js";
-import { observeMuteState } from "./meet-mute-observer.js";
-import { enableCaptionsAndObserve } from "./meet-caption-observer.js";
 import { showBanner, showFinishedBanner, updateBannerState } from "./meet-banner.js";
 import { ChunkDelivery } from "./chunk-delivery.js";
 import { debugEvent, debugLog, isDebugEnabled, setDebugEnabled } from "../shared/debug-log.js";
+
+const platform = getMeetingPlatform();
 
 // Nunca debe rechazar: startRecording()/waitForMeeting() esperan esta promesa
 // antes de arrancar, así que si chrome.storage.local.get fallara (ej. una
@@ -24,7 +23,7 @@ const debugLoggingReady = chrome.storage.local
   });
 
 function isInActiveMeeting() {
-  return findByIconText("call_end") !== null;
+  return platform.isInActiveMeeting();
 }
 
 function generateSessionId() {
@@ -74,9 +73,7 @@ function cleanupObservers() {
 }
 
 function getCurrentMeetingTitle() {
-  return document.title && document.title.trim() && document.title.trim() !== "Meet"
-    ? document.title.trim()
-    : "Reunión sin título";
+  return platform.getTitle();
 }
 
 async function startRecording() {
@@ -92,7 +89,7 @@ async function startRecording() {
   transcriptActive = false;
   captionState = "preparing"; captionStorage = { pending: 0, error: null };
   const preferences = await chrome.storage.local.get({ captionMode: "dom" }).catch(() => ({ captionMode: "dom" }));
-  captionMode = ["dom", "shadow", "hybrid"].includes(preferences.captionMode) ? preferences.captionMode : "dom";
+  captionMode = platform.captionMode(preferences.captionMode);
   videoEnabled = false;
   try {
     const opened = await chrome.runtime.sendMessage({ type: "asterion:session-starting", sessionId, meetingTitle });
@@ -132,7 +129,7 @@ async function startRecording() {
   delivery.router = new CaptionRouter({ sessionId, mode: captionMode,
     emit: (event) => delivery.captions.add(event), log: debugEvent });
   deliveries.set(sessionId, delivery);
-  delivery.stopIdentity = observeLocalIdentity(identity => {
+  delivery.stopIdentity = platform.observeLocalIdentity(identity => {
     if (sessionId !== delivery.sessionId || delivery.captionCutoff != null) return;
     delivery.router.setLocalIdentity(identity);
     debugEvent("caption-local-identity", { sessionId, ...identity });
@@ -151,7 +148,7 @@ async function startRecording() {
   // llamada - se aprovecha eso para mandar "start-session" recién ahí, con el
   // estado real de mute ya conocido (el GainNode del mic necesita arrancar en
   // el valor correcto desde el primer instante, ver Task 13 del plan).
-  stopMuteObserver = observeMuteState((muted, timestampMs) => {
+  stopMuteObserver = platform.observeMuteState((muted, timestampMs) => {
     micMuted = muted;
     updateBannerState(currentState, bannerMeta());
     if (isFirstMuteReport) {
@@ -171,7 +168,7 @@ async function startRecording() {
     });
   });
 
-  const cleanup = enableCaptionsAndObserve((snapshot) => {
+  const cleanup = platform.observeCaptions((snapshot) => {
     if (sessionId !== delivery.sessionId || delivery.captionCutoff != null) return;
     delivery.router.receive(snapshot);
   }, {
@@ -309,6 +306,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "asterion:get-status") {
     sendResponse({
       sessionId,
+      platform: platform.id,
       inMeeting: isInActiveMeeting(),
       state: currentState,
       meetingTitle: meetingTitle ?? getCurrentMeetingTitle(),
@@ -372,23 +370,24 @@ function waitForMeeting() {
     debugLog("[Ariadne:debug] Meeting detected");
     chrome.storage.local.get({ autoStart: true }, ({ autoStart }) => {
       debugLog("[Ariadne:debug] autoStart retrieved", { autoStart });
+      if (!isInActiveMeeting()) return;
+      if (!sessionId) setState("idle");
       showBanner({ onStart: startRecording, onStop: stopRecording });
       if (autoStart) startRecording();
     });
   };
 
-  if (isInActiveMeeting()) {
-    onMeetingDetected();
-    return;
-  }
-
-  const observer = new MutationObserver(() => {
-    if (isInActiveMeeting()) {
-      observer.disconnect();
-      onMeetingDetected();
-    }
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
+  // Teams uses SPA navigation: keep watching so a second call in the same tab
+  // gets a fresh banner and auto-start after the previous meeting ends.
+  let wasInMeeting = false;
+  const detect = () => {
+    const inMeeting = isInActiveMeeting();
+    if (inMeeting && !wasInMeeting) onMeetingDetected();
+    wasInMeeting = inMeeting;
+  };
+  detect();
+  const timer = setInterval(detect, 1000);
+  window.addEventListener("pagehide", () => clearInterval(timer), { once: true });
 }
 
 debugLoggingReady.then(waitForMeeting);

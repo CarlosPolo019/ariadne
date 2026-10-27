@@ -1,6 +1,7 @@
 import { captionStatusLabel } from "../shared/caption-status.js";
 import { icon } from "../shared/icons.js";
 import { initI18n } from "../shared/i18n/i18n.js";
+import { meetingPlatformForUrl } from "../shared/meeting-platform.js";
 
 const { t } = await initI18n();
 const appEl = document.getElementById("app");
@@ -234,7 +235,7 @@ async function readSnapshot() {
     chrome.tabs.query({ active: true, currentWindow: true }),
   ]);
   const tab = tabs[0];
-  const tabId = tab?.url?.startsWith("https://meet.google.com/") ? tab.id : null;
+  const tabId = meetingPlatformForUrl(tab?.url) ? tab.id : null;
   const nextStatus = tabId === null ? null : await chrome.tabs.sendMessage(tabId, { type: "asterion:get-status" });
   if (disposed || revision !== actionRevision) { refreshQueued = !disposed; return; }
   if (activeTabId !== tabId || !nextStatus?.inMeeting || nextStatus.state === "error") pendingAction = null;
