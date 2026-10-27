@@ -177,10 +177,13 @@ describe("storage RPC and restored history", () => {
     chrome.runtime.sendMessage.mockResolvedValueOnce({ folderName: "durable-folder" });
     await dispatch({ type: "asterion:session-starting", sessionId: "s", meetingTitle: "Meeting" }, { tab: { id: 7 } });
     expect(chrome.storage.__store.activeRecordingSessions.s.folderName).toBe("durable-folder");
-    const meta = { type: "asterion:session-finalized", sessionId: "s", folderName: "durable-folder", startedAt: 100, endedAt: 200, recordingStatus: "incomplete" };
+    const meta = { type: "asterion:session-finalized", sessionId: "s", folderName: "durable-folder", platform: "teams", startedAt: 100, endedAt: 200, recordingStatus: "incomplete" };
     await dispatch(meta); await dispatch(meta);
     expect(chrome.storage.__store.meetingHistory).toHaveLength(1);
     expect(chrome.storage.__store.meetingHistory[0].recordingStatus).toBe("incomplete");
+    expect(chrome.storage.__store.meetingHistory[0].platform).toBe("teams");
+    await dispatch({ ...meta, platform: undefined });
+    expect(chrome.storage.__store.meetingHistory[0].platform).toBe("teams");
   });
   it("recreates offscreen once for concurrent transport recovery", async () => {
     await import("./service-worker.js");

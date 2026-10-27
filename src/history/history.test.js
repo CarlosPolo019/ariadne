@@ -198,6 +198,14 @@ it('names every download using the meeting title, file type and actual extension
   }
 });
 
+it.each([["teams", "Microsoft Teams"], ["meet", "Google Meet"], [undefined, null]])('displays the saved platform %s without guessing legacy recordings', async (platform, label) => {
+  const { entry } = await openFixture(`platform-${platform ?? 'legacy'}`);
+  historyChanged({ meetingHistory: { newValue: [{ ...entry, platform }] } }, 'local');
+  const metadata = document.querySelector('.detail-metadata').textContent;
+  if (label) expect(metadata).toContain(label);
+  else { expect(metadata).not.toContain('Google Meet'); expect(metadata).not.toContain('Microsoft Teams'); }
+});
+
 it('keeps mounted pages, independent scroll, media state and file-specific actions', async () => {
   const { select, page, getDirectory } = await openFixture();
   const transcript = page('transcript'); const content = transcript.querySelector('.detail-tab-content'); content.scrollTop = 123;

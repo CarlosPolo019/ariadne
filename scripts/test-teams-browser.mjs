@@ -66,9 +66,12 @@ try {
   const history = () => worker.evaluate(async () => (await chrome.storage.local.get({ meetingHistory: [] })).meetingHistory);
   const entries = await until(history, entries => entries.some(entry => entry.sessionId === firstSession && entry.audioConversionStatus === "succeeded"), "MP3 and history publication");
   const first = entries.find(entry => entry.sessionId === firstSession);
+  assert.equal(first.platform, "teams");
   assert.equal(first.recordingStatus, "complete"); assert.equal(first.transcriptStatus, "complete");
   const storagePage = await context.newPage();
   await storagePage.goto(`chrome-extension://${id}/src/history/history.html`);
+  await storagePage.locator('.meeting-card').first().click();
+  await storagePage.waitForFunction(() => document.querySelector('.detail-metadata')?.textContent.includes('Microsoft Teams'));
   const saved = await storagePage.evaluate(async folderName => {
     const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle(folderName);
     const transcript = JSON.parse(await (await (await directory.getFileHandle("transcripcion.json")).getFile()).text());
@@ -79,7 +82,7 @@ try {
   assert.deepEqual(saved.transcript.map(({ speaker, text }) => ({ speaker, text })), [
     { speaker: "Ana", text: "Primera completa" }, { speaker: "Carlos", text: "Segunda" },
   ]);
-  assert(saved.audioBytes.length > 0); assert(saved.manifest.hasAudioMp3);
+  assert(saved.audioBytes.length > 0); assert(saved.manifest.hasAudioMp3); assert.equal(saved.manifest.platform, "teams");
   const decoded = await page.evaluate(async bytes => {
     const audio = await fixture.context.decodeAudioData(Uint8Array.from(bytes).buffer);
     const samples = audio.getChannelData(0);

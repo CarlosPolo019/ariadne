@@ -92,7 +92,7 @@ async function startRecording() {
   captionMode = platform.captionMode(preferences.captionMode);
   videoEnabled = false;
   try {
-    const opened = await chrome.runtime.sendMessage({ type: "asterion:session-starting", sessionId, meetingTitle });
+    const opened = await chrome.runtime.sendMessage({ type: "asterion:session-starting", sessionId, meetingTitle, platform: platform.id });
     if (!opened?.folderName || opened.error) throw new Error(opened?.error ?? "Storage initialization failed");
   } catch (error) {
     sessionId = null; setState("error"); cleanupObservers(); return;

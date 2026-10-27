@@ -14,6 +14,8 @@ npm run build
 
 En `chrome://extensions`, activa **Modo de desarrollador**, selecciona **Cargar descomprimida** y elige la carpeta del proyecto que contiene `manifest.json`. Recarga las pestañas de Teams y Meet después de instalar o actualizar la extensión: la captura de audio se prepara al cargar la página.
 
+Si el popup dice **Listo** y muestra un error genérico aunque ya estés dentro de Teams, comprueba que hayas recargado la pestaña después de instalar la extensión. Entrar a otra llamada sin recargar la página no carga los scripts en una pestaña que ya estaba abierta antes de la instalación. Recargar Teams interrumpe brevemente la llamada; vuelve a entrar cuando puedas hacerlo.
+
 ## Uso
 
 1. Abre Teams en `https://teams.cloud.microsoft`, `https://teams.microsoft.com` o `https://teams.live.com` y entra a la llamada desde Chrome.
@@ -29,7 +31,9 @@ Todo se guarda localmente mediante el almacenamiento de la extensión. Esta inte
 
 La aplicación de escritorio de Teams queda fuera del alcance de esta extensión. El adaptador depende del DOM del cliente web; Microsoft no ofrece un contrato estable para estos selectores. Los controles localizados de respaldo cubren inglés, español y francés.
 
-Las pruebas automatizadas usan estructuras representativas de Teams y audio sintetizado. **Todavía se necesita una llamada real de Teams para confirmar los selectores y la captura de audio en el cliente de tu organización.** Tampoco se ha validado la captura de video en una llamada real de Teams. No se afirma compatibilidad con clientes gubernamentales o dominios diferentes a los tres indicados.
+Las pruebas automatizadas usan estructuras representativas de Teams y audio sintetizado. **La detección de llamada, los subtítulos por hablante y el guardado de audio MP3 y transcripción en Historial se comprobaron en Teams web real el 27 de octubre de 2026.** Siguen pendientes las comprobaciones reales con dos participantes, silencio/reactivación del micrófono y captura de video. No se afirma compatibilidad con clientes gubernamentales o dominios diferentes a los tres indicados.
+
+Las nuevas grabaciones guardan la plataforma en su estado persistente, manifiesto e historial, incluso después de recuperar el almacenamiento. Las grabaciones anteriores que no tienen ese dato omiten la etiqueta de plataforma; no se deduce a partir del título.
 
 Antes de integrar la rama, realiza esta comprobación con dos participantes:
 
