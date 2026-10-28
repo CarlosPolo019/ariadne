@@ -1,14 +1,14 @@
-import { observeLocalIdentity } from "./meet-local-identity.js";
+import { getMeetingPlatform } from "./meeting-platform.js";
 import { CaptionDelivery } from "./caption-delivery.js";
 import { CaptionRouter } from "./caption-router.js";
 // src/content/meet-detector.js
-import { findByIconText } from "./meet-selectors.js";
-import { observeMuteState } from "./meet-mute-observer.js";
-import { enableCaptionsAndObserve } from "./meet-caption-observer.js";
-import { showBanner, showFinishedBanner, updateBannerState } from "./meet-banner.js";
+import { observeMeetingPresence } from "./meeting-presence.js";
+import { showBanner, updateBannerState } from "./meet-banner.js";
 import { ChunkDelivery } from "./chunk-delivery.js";
 import { debugEvent, debugLog, isDebugEnabled, setDebugEnabled } from "../shared/debug-log.js";
 
+const platform = getMeetingPlatform();
+const isInActiveMeeting = () => platform.isInActiveMeeting();
 // Nunca debe rechazar: startRecording()/waitForMeeting() esperan esta promesa
 // antes de arrancar, así que si chrome.storage.local.get fallara (ej. una
 // carrera transitoria en un reload en caliente de la extensión) sin este
@@ -23,10 +23,6 @@ const debugLoggingReady = chrome.storage.local
     console.error("[Ariadne] Could not read debug logging configuration; leaving it disabled:", error);
   });
 
-function isInActiveMeeting() {
-  return findByIconText("call_end") !== null;
-}
-
 function generateSessionId() {
   return `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -36,6 +32,7 @@ function postToMainWorld(message) {
 }
 
 const deliveries = new Map();
+const drainingSessionIds = new Set();
 let storageError = null;
 let sessionId = null;
 let currentState = "idle";
@@ -51,8 +48,58 @@ let micMuted = true;
 let videoEnabled = false;
 let stopMuteObserver = () => {};
 let stopCaptionObserver = () => {};
-let stopMeetingEndObserver = () => {};
-const MEETING_END_POLL_INTERVAL_MS = 3000;
+let meetingActive = false;
+let meetingGeneration = 0;
+let autoStartGeneration = null;
+let lastCaptureGeneration = null;
+let captureAttempt = null;
+let notice = null;
+
+function refreshBanner(extra = {}) {
+  updateBannerState(notice?.state ?? currentState, bannerMeta({
+    visible: Boolean(notice) || meetingActive,
+    captureSessionId: notice?.sessionId ?? null,
+    ...extra,
+  }));
+}
+
+function dismissNotice(expectedSessionId = notice?.sessionId) {
+  if (!notice || notice.sessionId !== expectedSessionId) return;
+  notice = null;
+  refreshBanner();
+}
+
+function beginNotice(reason, endedAt = Date.now()) {
+  if (!sessionId || notice?.sessionId === sessionId) return;
+  // Use the writer's session snapshot, not a fresh preference read or the UI timer.
+  // Its minimum-duration decision must agree with finalization at the boundary.
+  if (captureAttempt?.minimumMeetingDurationSeconds > 0 &&
+      Math.max(0, endedAt - captureAttempt.storageStartedAt) < captureAttempt.minimumMeetingDurationSeconds * 1000) return;
+  notice = { sessionId, reason, state: "saving", revision: -1 };
+  refreshBanner();
+}
+
+function updateNotice(metadata) {
+  if (!notice || notice.sessionId !== metadata.sessionId) return;
+  if (metadata.discarded) { dismissNotice(); return; }
+  const revision = metadata.processing?.revision ?? 0;
+  if (!metadata.error && (revision < notice.revision ||
+      (revision === notice.revision && notice.state === "finished" && metadata.processing?.pending))) return;
+  notice.revision = Math.max(notice.revision, revision);
+  const failed = metadata.error || metadata.recordingStatus === "incomplete" ||
+    metadata.transcriptStatus === "incomplete" || metadata.processing?.canRetry ||
+    [metadata.audioConversionStatus, metadata.videoConversionStatus, metadata.transcriptExportStatus].includes("failed");
+  notice.state = failed ? "capture-error" : metadata.processing?.pending ||
+    [metadata.audioConversionStatus, metadata.videoConversionStatus, metadata.transcriptExportStatus].includes("pending")
+    ? "processing" : "finished";
+  refreshBanner();
+}
+
+function maybeAutoStart() {
+  if (autoStartGeneration !== meetingGeneration || !meetingActive || sessionId) return;
+  autoStartGeneration = null;
+  void startRecording();
+}
 
 function bannerMeta(extra = {}) {
   return { meetingTitle, startedAt, hasTranscript, transcriptActive, captionState, captionStorage, micMuted, videoEnabled, ...extra };
@@ -60,30 +107,33 @@ function bannerMeta(extra = {}) {
 
 function setState(state, meta = {}) {
   currentState = state;
-  updateBannerState(state, bannerMeta(meta));
+  refreshBanner(meta);
 }
 
 function cleanupObservers() {
   transcriptActive = false;
   stopMuteObserver();
   stopCaptionObserver();
-  stopMeetingEndObserver();
   stopMuteObserver = () => {};
   stopCaptionObserver = () => {};
-  stopMeetingEndObserver = () => {};
 }
 
 function getCurrentMeetingTitle() {
-  return document.title && document.title.trim() && document.title.trim() !== "Meet"
-    ? document.title.trim()
-    : "Reunión sin título";
+  return platform.getTitle();
 }
 
 async function startRecording() {
-  if (sessionId) return;
-  await debugLoggingReady;
-  sessionId = generateSessionId();
+  if (!isInActiveMeeting()) return { ok: false, error: "Meeting is not active" };
+  if (sessionId) return { ok: false, error: "Capture is already active" };
+  const attempt = { id: generateSessionId(), generation: meetingGeneration, stopped: false, mainStarted: false };
+  captureAttempt = attempt;
+  lastCaptureGeneration = meetingGeneration;
+  sessionId = attempt.id; // Reserve before awaiting, including popup/banner races.
+  notice = null;
+  autoStartGeneration = null;
   setState("starting");
+  await debugLoggingReady;
+  if (!canContinueStart(attempt)) return cancelStart(attempt);
 
   meetingTitle = getCurrentMeetingTitle();
   debugLog("[Ariadne:debug] startRecording started", { sessionId, meetingTitle });
@@ -92,13 +142,22 @@ async function startRecording() {
   transcriptActive = false;
   captionState = "preparing"; captionStorage = { pending: 0, error: null };
   const preferences = await chrome.storage.local.get({ captionMode: "dom" }).catch(() => ({ captionMode: "dom" }));
-  captionMode = ["dom", "shadow", "hybrid"].includes(preferences.captionMode) ? preferences.captionMode : "dom";
+  if (!canContinueStart(attempt)) return cancelStart(attempt);
+  captionMode = platform.captionMode(preferences.captionMode);
   videoEnabled = false;
   try {
-    const opened = await chrome.runtime.sendMessage({ type: "asterion:session-starting", sessionId, meetingTitle });
+    const opened = await chrome.runtime.sendMessage({ type: "asterion:session-starting", sessionId, meetingTitle, platform: platform.id });
     if (!opened?.folderName || opened.error) throw new Error(opened?.error ?? "Storage initialization failed");
+    attempt.opened = true;
+    attempt.storageStartedAt = opened.startedAt;
+    attempt.minimumMeetingDurationSeconds = opened.minimumMeetingDurationSeconds ?? 0;
+    if (!canContinueStart(attempt)) return cancelStart(attempt);
   } catch (error) {
-    sessionId = null; setState("error"); cleanupObservers(); return;
+    if (captureAttempt === attempt) {
+      updateNotice({ sessionId: attempt.id, error: error.message });
+      sessionId = null; captureAttempt = null; setState("error"); cleanupObservers(); maybeAutoStart();
+    }
+    return { ok: false, error: error.message };
   }
   storageError = null;
   const delivery = new ChunkDelivery({ sessionId,
@@ -110,8 +169,10 @@ async function startRecording() {
     onAck: (message) => postToMainWorld({ ...message, type: "asterion:chunk-committed" }),
     onStatus: (status) => postToMainWorld({ type: "asterion:storage-progress", ...status }),
     onFatal: (error) => {
-      storageError = error.message; setState("error");
-      postToMainWorld({ type: "asterion:stop-session", sessionId: delivery.sessionId, interruptionReason: error.message });
+      if (sessionId !== delivery.sessionId) return;
+      storageError = error.message;
+      stopRecording(isInActiveMeeting() ? "manual" : "meeting-left", error.message);
+      updateNotice({ sessionId: delivery.sessionId, error: error.message });
     },
   });
   delivery.captions = new CaptionDelivery({ sessionId,
@@ -120,19 +181,19 @@ async function startRecording() {
     onAck: (event) => {
       if (event.kind === "local-identity") return;
       if (sessionId !== delivery.sessionId) return;
-      hasTranscript = true; updateBannerState(currentState, bannerMeta());
+      hasTranscript = true; refreshBanner();
     },
     onStatus: (status) => {
       debugEvent("caption-storage", { sessionId: delivery.sessionId, ...status });
       if (sessionId !== delivery.sessionId) return;
-      captionStorage = status; updateBannerState(currentState, bannerMeta());
+      captionStorage = status; refreshBanner();
       postToMainWorld({ type: "asterion:caption-storage", sessionId: delivery.sessionId, ...status });
     },
   });
   delivery.router = new CaptionRouter({ sessionId, mode: captionMode,
     emit: (event) => delivery.captions.add(event), log: debugEvent });
   deliveries.set(sessionId, delivery);
-  delivery.stopIdentity = observeLocalIdentity(identity => {
+  delivery.stopIdentity = platform.observeLocalIdentity(identity => {
     if (sessionId !== delivery.sessionId || delivery.captionCutoff != null) return;
     delivery.router.setLocalIdentity(identity);
     debugEvent("caption-local-identity", { sessionId, ...identity });
@@ -151,11 +212,12 @@ async function startRecording() {
   // llamada - se aprovecha eso para mandar "start-session" recién ahí, con el
   // estado real de mute ya conocido (el GainNode del mic necesita arrancar en
   // el valor correcto desde el primer instante, ver Task 13 del plan).
-  stopMuteObserver = observeMuteState((muted, timestampMs) => {
+  stopMuteObserver = platform.observeMuteState((muted, timestampMs) => {
     micMuted = muted;
-    updateBannerState(currentState, bannerMeta());
+    refreshBanner();
     if (isFirstMuteReport) {
       isFirstMuteReport = false;
+      attempt.mainStarted = true;
       postToMainWorld({
         type: "asterion:start-session",
         sessionId,
@@ -171,7 +233,7 @@ async function startRecording() {
     });
   });
 
-  const cleanup = enableCaptionsAndObserve((snapshot) => {
+  const cleanup = platform.observeCaptions((snapshot) => {
     if (sessionId !== delivery.sessionId || delivery.captionCutoff != null) return;
     delivery.router.receive(snapshot);
   }, {
@@ -185,21 +247,49 @@ async function startRecording() {
         debugEvent("caption-capture-state", { sessionId, ...status });
         postToMainWorld({ type: "asterion:caption-enabled", sessionId, enabled: status.state === "active" });
       }
-      updateBannerState(currentState, bannerMeta());
+      refreshBanner();
     },
   });
   delivery.stopDom = cleanup;
   if (sessionId !== delivery.sessionId) { cleanup?.(); delivery.stopIdentity?.(); return; }
   stopCaptionObserver = () => { cleanup?.(); delivery.stopIdentity?.(); };
-  stopMeetingEndObserver = observeMeetingEnd();
+  if (!attempt.mainStarted) return cancelStart(attempt);
+  return { ok: true };
 }
 
-function stopRecording() {
-  if (!sessionId) return;
-  const delivery = deliveries.get(sessionId);
+function canContinueStart(attempt) {
+  return captureAttempt === attempt && !attempt.stopped &&
+    attempt.generation === meetingGeneration && isInActiveMeeting();
+}
+
+async function cancelStart(attempt) {
+  if (notice?.sessionId === attempt.id) dismissNotice();
+  if (attempt.opened) {
+    try {
+      const result = await chrome.runtime.sendMessage({ type: "asterion:session-ended", sessionId: attempt.id,
+        endedAt: attempt.endedAt ?? Date.now(), interruptionReason: "capture-start-cancelled" });
+      updateNotice({ ...result, sessionId: attempt.id });
+    } catch (error) { updateNotice({ sessionId: attempt.id, error: error.message }); }
+  }
+  if (captureAttempt === attempt) {
+    const delivery = deliveries.get(attempt.id);
+    clearInterval(delivery?.statusTimer);
+    delivery?.captions.dispose();
+    deliveries.delete(attempt.id);
+    sessionId = null; captureAttempt = null; cleanupObservers(); setState("idle"); maybeAutoStart();
+  }
+  return { ok: false, error: "Capture start cancelled" };
+}
+
+function stopRecording(reason = "manual", interruptionReason = null) {
+  if (!sessionId || captureAttempt?.stopped) return;
   const endedAt = Date.now();
+  if (captureAttempt) Object.assign(captureAttempt, { stopped: true, endedAt });
+  beginNotice(reason, endedAt);
+  setState("stopping");
+  const delivery = deliveries.get(sessionId);
   cutoffCaptions(delivery, endedAt);
-  postToMainWorld({ type: "asterion:stop-session", sessionId, endedAt });
+  if (captureAttempt?.mainStarted) postToMainWorld({ type: "asterion:stop-session", sessionId, endedAt, interruptionReason });
 }
 
 function cutoffCaptions(delivery, endedAt) {
@@ -231,24 +321,28 @@ window.addEventListener("message", (event) => {
     debugEvent("caption-channel-health", message);
     if (captionMode === "hybrid" && delivery.captionCutoff == null && delivery.domStatus?.state === "active") {
       captionState = message.usable ? "active" : delivery.domStatus.panel ? "active" : "recovering";
-      updateBannerState(currentState, bannerMeta());
+      refreshBanner();
     }
   } else if (message.type === "asterion:caption-cutoff") {
     cutoffCaptions(deliveries.get(message.sessionId), message.endedAt);
   } else if (message.type === "asterion:session-started") {
-    if (message.sessionId !== sessionId) return;
+    if (message.sessionId !== sessionId || captureAttempt?.stopped) return;
     postToMainWorld({ type: "asterion:caption-enabled", sessionId, enabled: deliveries.get(sessionId)?.domStatus?.state === "active" });
     setState("recording");
   } else if (message.type === "asterion:start-failed") {
+    if (message.sessionId && message.sessionId !== sessionId) return;
     const delivery = deliveries.get(sessionId);
     clearInterval(delivery?.statusTimer);
     clearInterval(delivery?.watchdog);
     delivery?.captions.dispose();
     deliveries.delete(sessionId);
     if (sessionId) chrome.runtime.sendMessage({ type: "asterion:session-ended", sessionId, endedAt: Date.now(), interruptionReason: message.reason }).catch(() => {});
+    updateNotice({ sessionId, error: message.reason });
     sessionId = null;
+    captureAttempt = null;
     setState("error");
     cleanupObservers();
+    maybeAutoStart();
     console.error("[Ariadne] Could not start the session:", message.reason);
   } else if (message.type === "asterion:chunk") {
     deliveries.get(message.sessionId)?.add(message);
@@ -270,14 +364,21 @@ window.addEventListener("message", (event) => {
       label: message.label,
     });
   } else if (message.type === "asterion:video-enabled") {
+    if (captureAttempt?.stopped || (message.sessionId && message.sessionId !== sessionId)) return;
     videoEnabled = true;
     setState("video-enabled");
   } else if (message.type === "asterion:video-enable-failed") {
-    updateBannerState(currentState, bannerMeta({ videoError: message.message }));
+    refreshBanner({ videoError: message.message });
   } else if (message.type === "asterion:session-ended") {
     if (message.sessionId !== sessionId) return;
     const delivery = deliveries.get(message.sessionId);
+    if (message.interruptionReason === "capture-start-cancelled" && notice?.sessionId === message.sessionId) dismissNotice();
+    // Recorder failures may end a capture without an explicit stop click.
+    if (!captureAttempt?.stopped) beginNotice(isInActiveMeeting() ? "manual" : "meeting-left", message.endedAt);
     cutoffCaptions(delivery, message.endedAt);
+    // Recovery must keep this writer open while deliveries drain, even if a
+    // new capture starts before this session finishes saving.
+    drainingSessionIds.add(message.sessionId);
     (async () => {
       clearInterval(delivery?.statusTimer);
       const [persistenceErrors, captionPersistenceErrors] = await Promise.all([delivery?.flush() ?? [], delivery?.captions.flush() ?? []]);
@@ -287,14 +388,21 @@ window.addEventListener("message", (event) => {
         muteManifest: message.muteManifest, endedAt: message.endedAt, expectedSequences: message.expectedSequences,
         interruptionReason: message.interruptionReason ?? delivery?.fatal?.message ?? null,
       });
-      if (!result?.error && !result?.discarded) {
+      updateNotice({ ...(result ?? { error: "Storage transport unavailable" }), sessionId: message.sessionId });
+      if (result && !result.error && !result.discarded) {
         const status = await chrome.runtime.sendMessage({ type: "asterion:storage-status", sessionId: message.sessionId, folderName: result.folderName });
         if (!status?.error) postToMainWorld({ type: "asterion:storage-progress", ...status, pending: delivery?.pending.size ?? 0, storageRecoveries: delivery?.recoveries ?? 0 });
       }
-      if (result?.error && (!sessionId || sessionId === message.sessionId)) { storageError = result.error; setState("error"); }
-    })().catch((error) => { if (!sessionId || sessionId === message.sessionId) { storageError = error.message; setState("error"); } })
-      .finally(() => { if (!delivery?.captions.pending.size) deliveries.delete(message.sessionId); });
+    })().catch((error) => updateNotice({ sessionId: message.sessionId, error: error.message }))
+      .finally(() => {
+        drainingSessionIds.delete(message.sessionId);
+        if (!delivery?.captions.pending.size) {
+          delivery?.captions.dispose();
+          deliveries.delete(message.sessionId);
+        }
+      });
     sessionId = null;
+    captureAttempt = null;
     meetingTitle = null;
     startedAt = null;
     hasTranscript = false;
@@ -302,6 +410,7 @@ window.addEventListener("message", (event) => {
     videoEnabled = false;
     setState(storageError ? "error" : "idle");
     cleanupObservers();
+    maybeAutoStart();
   }
 });
 
@@ -309,6 +418,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "asterion:get-status") {
     sendResponse({
       sessionId,
+      drainingSessionIds: [...drainingSessionIds],
+      platform: platform.id,
       inMeeting: isInActiveMeeting(),
       state: currentState,
       meetingTitle: meetingTitle ?? getCurrentMeetingTitle(),
@@ -322,8 +433,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.type === "asterion:popup-start") {
-    startRecording();
-    sendResponse({ ok: true });
+    startRecording().then(sendResponse).catch(error => sendResponse({ ok: false, error: error.message }));
     return true;
   }
   if (message.type === "asterion:popup-stop") {
@@ -334,61 +444,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 chrome.runtime.onMessage.addListener((message) => {
-  if (message.type === "asterion:session-finalized") {
-    if (sessionId) return;
-    if (message.recordingStatus === "incomplete" || storageError) setState("error");
-    else showFinishedBanner();
-  }
+  if (message.type === "asterion:session-finalized") updateNotice(message);
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !notice || !changes.meetingHistory) return;
+  const entry = changes.meetingHistory.newValue?.find(entry => entry.sessionId === notice.sessionId);
+  if (entry) updateNotice(entry);
 });
 
 window.addEventListener("pagehide", () => {
-  if (sessionId) stopRecording();
+  if (sessionId) stopRecording("meeting-left");
 });
 
-function observeMeetingEnd() {
-  // Chequeo inicial inmediato: cubre el caso de que el usuario ya se haya
-  // ido de la reunión mientras `startRecording()` todavía estaba esperando
-  // `enableCaptionsAndObserve(...)`, antes de que este polling arrancara.
-  if (!isInActiveMeeting()) {
-    debugLog("[Ariadne:debug] Meeting ended (initial check); stopping recording automatically");
-    stopRecording();
-    return () => {};
-  }
-
-  const intervalId = setInterval(() => {
-    if (!isInActiveMeeting()) {
-      clearInterval(intervalId);
-      debugLog("[Ariadne:debug] Meeting ended; stopping recording automatically");
-      stopRecording();
-    }
-  }, MEETING_END_POLL_INTERVAL_MS);
-  return () => clearInterval(intervalId);
-}
-
-function waitForMeeting() {
-  debugLog("[Ariadne:debug] waitForMeeting isInActiveMeeting", { isInActiveMeeting: isInActiveMeeting() });
-
-  const onMeetingDetected = () => {
-    debugLog("[Ariadne:debug] Meeting detected");
-    chrome.storage.local.get({ autoStart: true }, ({ autoStart }) => {
-      debugLog("[Ariadne:debug] autoStart retrieved", { autoStart });
-      showBanner({ onStart: startRecording, onStop: stopRecording });
-      if (autoStart) startRecording();
-    });
-  };
-
-  if (isInActiveMeeting()) {
-    onMeetingDetected();
+async function onMeetingPresence(active) {
+  meetingActive = active;
+  const generation = ++meetingGeneration;
+  autoStartGeneration = null;
+  if (!active) {
+    if (notice?.reason === "manual") notice = null;
+    if (sessionId && !captureAttempt?.stopped) stopRecording("meeting-left");
+    refreshBanner();
     return;
   }
-
-  const observer = new MutationObserver(() => {
-    if (isInActiveMeeting()) {
-      observer.disconnect();
-      onMeetingDetected();
-    }
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
+  notice = null;
+  if (!sessionId) currentState = "idle";
+  if (!sessionId || captureAttempt?.stopped) storageError = null;
+  await showBanner({ onStart: () => void startRecording(), onStop: () => stopRecording(), onDismiss: dismissNotice });
+  refreshBanner();
+  const { autoStart } = await chrome.storage.local.get({ autoStart: true }).catch(() => ({ autoStart: false }));
+  if (generation !== meetingGeneration || !isInActiveMeeting()) return;
+  if (autoStart && lastCaptureGeneration !== generation) {
+    autoStartGeneration = generation;
+    maybeAutoStart();
+  }
 }
 
-debugLoggingReady.then(waitForMeeting);
+debugLoggingReady.then(() => observeMeetingPresence(active => { void onMeetingPresence(active); }, { isActive: isInActiveMeeting }));

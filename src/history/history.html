@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ariadne - Historial</title>
     <link rel="stylesheet" href="../shared/theme.css" />
+    <link rel="stylesheet" href="../shared/split-button.css" />
     <style>
       :root { color-scheme: light dark; }
       body { margin: 0; min-width: 0; overflow: hidden; background: var(--bg); color: var(--text-primary); }
@@ -80,17 +81,25 @@
       .meeting-region { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 16px; }
       .detail-content:not(.has-meeting) .meeting-region { align-items: center; justify-content: center; }
       .meeting-footer { flex: none; border-top: 1px solid var(--border); padding-top: 12px; }
-      .meeting-footer[hidden], .playback-status[hidden] { display: none; }
-      .detail-navigation { position: relative; flex: none; min-height: 32px; container-type: inline-size; }
-      .detail-navigation .detail-tabs { padding-right: 64px; }
-      .playback-slot { position: absolute; top: 0; right: 0; height: 32px; }
-      @container (max-width: 650px) {
-        .playback-status > span { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-      }
-      .playback-status { display: flex; align-items: center; justify-content: space-between; height: 100%; gap: 12px; color: var(--text-secondary); font-size: 12px; }
-      .playback-status .detail-action { padding: 4px 8px; }
-      .detail-tab[id*="-audio-"]::after, .detail-tab[id*="-video-"]::after { opacity: 0; content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-green); }
-      .detail-tab.is-playing::after { opacity: 1; }
+      .meeting-footer[hidden] { display: none; }
+      .detail-navigation { flex: none; min-height: 32px; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px; }
+      .detail-navigation .detail-tabs { flex-wrap: wrap; max-width: 100%; }
+      .transcript-actions { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: 100%; }
+      .transcript-actions[hidden] { display: none; }
+      .transcript-action-status { font-size: 11px; color: var(--text-muted); max-width: 280px; text-align: right; }
+      .transcript-action-status:empty { display: none; }
+      .detail-tab { position: relative; }
+      .detail-tab.is-active { background: transparent; }
+      .detail-tab::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: var(--bg-button); opacity: 0; transform-origin: left center; pointer-events: none; }
+      .detail-tab.is-active::before { opacity: 1; }
+      .detail-tab > * { position: relative; }
+      .detail-playback-marker { display: block; flex: none; width: 6px; height: 6px; margin-left: 4px; border-radius: 50%; background: var(--accent-green); pointer-events: none; }
+      .detail-playback-marker[hidden] { display: none; }
+      .detail-playback-marker::after { content: ""; position: absolute; inset: -3px; border-radius: inherit; background: var(--accent-green); opacity: .2; animation: playback-aura 2s ease-in-out infinite; }
+      .detail-playback-marker.is-exiting { margin-left: 0; }
+      .detail-playback-marker.is-exiting::after { animation: none; }
+      @keyframes playback-aura { 0%, 100% { opacity: .15; transform: scale(1); } 50% { opacity: .3; transform: scale(1.4); } }
+      @media (prefers-reduced-motion: reduce) { .detail-playback-marker::after { animation: none; } }
       .more-menu { transform-origin: top right; }
       button.file-chip { border: 0; padding: 0; background: transparent; font-family: inherit; }
       .action-error { color: var(--accent-red); }

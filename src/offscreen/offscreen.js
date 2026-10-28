@@ -117,7 +117,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       operation.catch(() => deletions.delete(writer.sessionId));
       return operation;
     }
-    if (message.type === "asterion:session-starting") return { folderName: writer.folderName, ...writer.getStorageSnapshot() };
+    if (message.type === "asterion:session-starting") return {
+      folderName: writer.folderName, ...writer.getStorageSnapshot(),
+      startedAt: writer.startedAt, minimumMeetingDurationSeconds: writer.minimumMeetingDurationSeconds,
+    };
     if (message.type === "asterion:chunk") {
       const ack = await writer.writeChunk(message.stream, base64ToArrayBuffer(message.bufferBase64), message);
       return { committed: true, ...ack };
@@ -161,7 +164,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       ...(message.type === "asterion:get-recovery-status" ? { recovery: { supported: false, pending: false, canRetry: false, tasks: [] } } : {}),
       ...(message.type === "asterion:session-ended" && writer ? { sessionId: writer.sessionId,
         folderName: writer.folderName, startedAt: writer.startedAt, endedAt: message.endedAt ?? Date.now(),
-        durationMs: (message.endedAt ?? Date.now()) - writer.startedAt, meetingTitle: writer.meetingTitle,
+        durationMs: (message.endedAt ?? Date.now()) - writer.startedAt, meetingTitle: writer.meetingTitle, platform: writer.platform,
         hasTranscript: writer.transcriptExported ?? writer.hasCaption, transcriptStatus: writer.transcriptStatus, hasVideo: writer.streamsUsed.has("video"), recordingStatus: "incomplete", interruptionReason: message.interruptionReason ?? error.message } : {}) });
   });
   return true;

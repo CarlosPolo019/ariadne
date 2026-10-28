@@ -1,4 +1,4 @@
-import { processingQueue, terminal, retryDelay, deadline } from "../offscreen/conversion-queue.js";
+import { processingQueue, terminal, retryDelay } from "../offscreen/conversion-queue.js";
 import { readJson } from "./capture-journal.js";
 
 const RECOVERY_VERSION = 2;
@@ -109,7 +109,7 @@ export class SessionRecovery {
     const controller = new AbortController(); this.initialController = controller;
     this.initialExport = this.exportTranscript(controller.signal);
     try {
-      await deadline(this.initialExport, 120000, () => controller.abort());
+      await this.initialExport;
       task.state = "succeeded"; task.published = true; task.error = null;
     }
     catch (error) {
@@ -125,7 +125,7 @@ export class SessionRecovery {
   async schedule() {
     const task = this.tasks.find(job => job.stream === "transcript");
     if (task && !(terminal(task) && task.published)) await processingQueue.add(task, {
-      save: () => this.saveChanged(), timeoutMs: 120000,
+      save: () => this.saveChanged(),
       execute: signal => this.exportTranscript(signal), finish: async () => {},
       changed: () => this.publish(),
     });
@@ -139,7 +139,7 @@ export class SessionRecovery {
     if (task.state === "succeeded" && (this.state.publishedRevision ?? -1) < (this.state.recoveryRevision ?? 0)) resetTask(task);
     if (terminal(task) && task.published) return;
     await processingQueue.add(task, {
-      save: () => this.writer.journal.checkpoint({ recoveryTasks: this.tasks }), timeoutMs: 120000,
+      save: () => this.writer.journal.checkpoint({ recoveryTasks: this.tasks }),
       execute: async signal => {
         const revision = this.state.recoveryRevision ?? 0;
         let manifestError;

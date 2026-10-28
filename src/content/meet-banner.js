@@ -14,6 +14,12 @@ let bannerReady = false;
 let bannerPosition = { edge: "bottom", offset: null };
 let isDragging = false;
 let t = (key) => key;
+let motionView = null;
+let motionFrame = null;
+let pendingMotion = null;
+let motionVersion = 0;
+const motionAnimations = new Map();
+const motionSnapshots = new Set();
 
 const EDGE_MARGIN = 16;
 const BANNER_POSITION_KEY = "bannerPosition";
@@ -73,9 +79,10 @@ function renderError() {
 function renderFinished() {
   return `<div class="banner finished">
     <div class="finish-badge"><svg xmlns="http://www.w3.org/2000/svg" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6" /></svg></div>
-    <div class="brand-copy finish-copy"><strong>${t("banner.finishedTitle")}</strong><span>${t("banner.finishedCopy")}</span></div>
+    <div class="brand-copy finish-copy" role="status" aria-live="polite" aria-atomic="true"><strong>${t("banner.finishedTitle")}</strong><span>${t("banner.finishedCopy")}</span></div>
     <button class="secondary-button" id="view-recording" type="button">${t("banner.viewRecording")} ${icon("arrow-up-right", { size: 15 })}</button>
     <button class="icon-button" id="dismiss-banner" type="button" aria-label="${t("banner.dismissAria")}">${icon("x", { size: 17 })}</button>
+    <span class="open-error" role="alert" hidden>${t("banner.openHistoryError")}</span>
   </div>`;
 }
 
@@ -103,29 +110,272 @@ function wireEvents() {
         break;
       case "stop-capture": callbacks.onStop(); break;
       case "toggle-expanded": isExpanded = !isExpanded; render(); break;
-      case "view-recording": chrome.tabs.create({ url: chrome.runtime.getURL("src/history/history.html") }); break;
-      case "dismiss-banner":
-        contentEl.hidden = true;
-        clearInterval(timerInterval);
-        timerInterval = null;
-        break;
+      case "view-recording": void openRecording(button); break;
+      case "dismiss-banner": dismissBanner(currentMeta.captureSessionId); break;
     }
   });
 }
 
+function dismissBanner(sessionId) {
+  if (sessionId !== currentMeta.captureSessionId) return;
+  if (callbacks.onDismiss) callbacks.onDismiss(sessionId);
+  else { currentMeta.visible = false; render(); }
+}
+
+async function openRecording(button) {
+  const sessionId = currentMeta.captureSessionId;
+  button.disabled = true;
+  contentEl.querySelector(".open-error").hidden = true;
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "asterion:open-history", sessionId: sessionId ?? null });
+    if (!result?.ok) throw new Error(result?.error ?? "Could not open history");
+    dismissBanner(sessionId);
+  } catch {
+    if (sessionId === currentMeta.captureSessionId) contentEl.querySelector(".open-error").hidden = false;
+  } finally { button.disabled = false; }
+}
+
+function motionTokens() {
+  const style = getComputedStyle(contentEl);
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  const duration = name => parseFloat(style.getPropertyValue(name));
+  return { reduced, enter: duration(reduced ? "--motion-reduced" : "--motion-enter"),
+    exit: duration(reduced ? "--motion-reduced" : "--motion-exit"),
+    swap: duration(reduced ? "--motion-reduced" : "--motion-swap"),
+    distance: reduced ? 0 : parseFloat(style.getPropertyValue("--motion-distance")),
+    easing: style.getPropertyValue("--ease-out").trim() };
+}
+
+function cancelMotion(element) {
+  const animation = motionAnimations.get(element);
+  if (!animation) return;
+  const style = getComputedStyle(element);
+  element.style.opacity = style.opacity;
+  element.style.transform = style.transform;
+  motionAnimations.delete(element);
+  animation.cancel();
+}
+
+function animateMotion(element, frames, duration, onFinish = () => {}) {
+  cancelMotion(element);
+  if (motionTokens().reduced) frames = frames.map(({ transform, ...frame }) => frame);
+  const animation = element.animate(frames, { duration, easing: motionTokens().easing, fill: "both" });
+  motionAnimations.set(element, animation);
+  animation.finished.then(() => {
+    if (motionAnimations.get(element) !== animation) return;
+    motionAnimations.delete(element);
+    animation.cancel();
+    element.style.opacity = "";
+    element.style.transform = "";
+    onFinish();
+  }, () => {}); // Cancellation is expected when a newer state or a drag interrupts.
+}
+
+function snapshotMotion(source, append = true) {
+  const rect = source.getBoundingClientRect();
+  const copy = source.cloneNode(true);
+  const originalNodes = [source, ...source.querySelectorAll("*")];
+  const copiedNodes = [copy, ...copy.querySelectorAll("*")];
+  copiedNodes.forEach((node, index) => {
+    const style = getComputedStyle(originalNodes[index]);
+    node.style.opacity = style.opacity;
+    node.style.transform = style.transform;
+    node.style.color = style.color;
+    node.style.backgroundColor = style.backgroundColor;
+    node.removeAttribute("id");
+    node.removeAttribute("role");
+    node.removeAttribute("aria-live");
+    node.removeAttribute("data-asterion-enable-video");
+    if (node.matches("button")) { node.disabled = true; node.tabIndex = -1; }
+  });
+  // A status fragment inherits a partially entered panel's opacity.
+  for (let parent = source.parentElement; parent && parent !== contentEl; parent = parent.parentElement) {
+    copy.style.opacity = String(Number(copy.style.opacity) * Number(getComputedStyle(parent).opacity));
+  }
+  // The rect already includes the source's current transform; do not apply it twice.
+  copy.style.transform = "none";
+  copy.classList.add("motion-snapshot");
+  copy.setAttribute("aria-hidden", "true");
+  copy.setAttribute("inert", "");
+  Object.assign(copy.style, { position: "fixed", left: `${rect.left}px`, top: `${rect.top}px`,
+    width: `${rect.width}px`, height: `${rect.height}px`, margin: "0", maxWidth: "none", maxHeight: "none" });
+  if (append) {
+    contentEl.append(copy);
+    motionSnapshots.add(copy);
+  }
+  return copy;
+}
+
+function removeMotionSnapshot(copy) {
+  motionSnapshots.delete(copy);
+  copy.remove();
+}
+
+function prepareMotion(view) {
+  const previous = motionView;
+  motionView = view;
+  if (document.visibilityState === "hidden") { finishMotion(); return null; }
+  if (!contentEl.isConnected || typeof contentEl.animate !== "function") return null;
+  if (previous?.visible === view.visible && previous?.key === view.key) return null;
+  if (!pendingMotion) {
+    const surface = contentEl.querySelector(".banner-surface");
+    const fragments = previous?.visible && !contentEl.hidden
+      ? previous.pane === view.pane && view.visible
+        ? [...previous.pane.querySelectorAll(".finish-copy, .finish-badge")]
+        : [previous.pane]
+      : [];
+    pendingMotion = { fromRect: contentEl.hidden ? null : surface.getBoundingClientRect(),
+      copies: fragments.map(source => snapshotMotion(source)),
+      fullCopy: previous?.visible && previous.pane === view.pane && view.visible ? snapshotMotion(previous.pane, false) : null,
+      previous, view, version: ++motionVersion };
+  } else {
+    if (pendingMotion.fullCopy && (view.pane !== pendingMotion.previous.pane || !view.visible)) {
+      for (const copy of pendingMotion.copies) removeMotionSnapshot(copy);
+      pendingMotion.copies = [pendingMotion.fullCopy];
+      contentEl.append(pendingMotion.fullCopy);
+      motionSnapshots.add(pendingMotion.fullCopy);
+      pendingMotion.fullCopy = null;
+    }
+    pendingMotion.view = view;
+  }
+  return pendingMotion;
+}
+
+function scheduleMotion(request) {
+  if (!request) return;
+  const { view, previous } = request;
+  const statusSwap = view.visible && previous?.visible && view.pane === previous.pane;
+  const targets = view.visible ? statusSwap
+    ? [...view.pane.querySelectorAll(".finish-copy, .finish-badge")] : [view.pane] : [];
+  for (const target of request.targets ?? []) {
+    if (!targets.includes(target)) { target.style.opacity = ""; target.style.transform = ""; }
+  }
+  request.targets = targets;
+  const { distance } = motionTokens();
+  for (const target of targets) {
+    cancelMotion(target);
+    target.style.opacity = "0";
+    target.style.transform = `translateY(${distance}px)`;
+  }
+  if (motionFrame !== null) return;
+  motionFrame = requestAnimationFrame(() => {
+    motionFrame = null;
+    const motion = pendingMotion;
+    pendingMotion = null;
+    const tokens = motionTokens();
+    const surface = contentEl.querySelector(".banner-surface");
+    const { view, previous, version } = motion;
+    for (const copy of motion.copies) {
+      const opacity = getComputedStyle(copy).opacity;
+      animateMotion(copy, [{ opacity, transform: copy.style.transform },
+        { opacity: 0, transform: `translateY(${view.visible ? -tokens.distance : tokens.distance}px)` }],
+      view.visible && view.pane === previous?.pane ? tokens.swap : tokens.exit, () => removeMotionSnapshot(copy));
+    }
+    if (!view.visible) {
+      const bounds = contentEl.getBoundingClientRect();
+      contentEl.style.width = `${bounds.width}px`;
+      contentEl.style.height = `${bounds.height}px`;
+      for (const pane of contentEl.querySelectorAll(":scope > .banner:not(.motion-snapshot)")) pane.hidden = true;
+      const style = getComputedStyle(surface);
+      animateMotion(surface, [{ opacity: style.opacity, transform: style.transform },
+        { opacity: 0, transform: `translateY(${tokens.distance}px)` }], tokens.exit, () => {
+        if (motionVersion === version && !motionView.visible) {
+          contentEl.hidden = true;
+          contentEl.style.width = "";
+          contentEl.style.height = "";
+        }
+      });
+      return;
+    }
+    const statusSwap = previous?.visible && previous.pane === view.pane;
+    for (const target of motion.targets) {
+      animateMotion(target, [{ opacity: 0, transform: `translateY(${tokens.distance}px)` },
+        { opacity: 1, transform: "translateY(0)" }], statusSwap ? tokens.swap : tokens.enter);
+    }
+    if (!isDragging && Number.isFinite(bannerPosition.offset)) applyBannerPosition(bannerPosition, true);
+    const toRect = contentEl.getBoundingClientRect();
+    const from = motion.fromRect;
+    const style = getComputedStyle(surface);
+    const transform = !tokens.reduced && from?.width && from?.height && toRect.width && toRect.height
+      ? `translate(${from.left - toRect.left}px, ${from.top - toRect.top}px) scale(${from.width / toRect.width}, ${from.height / toRect.height})`
+      : `translateY(${!from ? tokens.distance : 0}px)`;
+    const resized = !from || Math.abs(from.left - toRect.left) > 0.5 || Math.abs(from.top - toRect.top) > 0.5 ||
+      Math.abs(from.width - toRect.width) > 0.5 || Math.abs(from.height - toRect.height) > 0.5;
+    if (resized || !previous?.visible || Number(style.opacity) < 1) {
+      animateMotion(surface, [{ opacity: from ? style.opacity : 0, transform },
+        { opacity: 1, transform: "translateY(0)" }], tokens.enter);
+    }
+  });
+}
+
+function finishMotion() {
+  if (!motionView) return;
+  if (motionFrame !== null) cancelAnimationFrame(motionFrame);
+  motionFrame = null;
+  pendingMotion = null;
+  motionVersion++;
+  for (const [element, animation] of motionAnimations) {
+    animation.cancel();
+    element.style.opacity = "";
+    element.style.transform = "";
+  }
+  motionAnimations.clear();
+  for (const copy of motionSnapshots) copy.remove();
+  motionSnapshots.clear();
+  for (const pane of contentEl.querySelectorAll(":scope > .banner:not(.motion-snapshot)")) {
+    pane.style.opacity = "";
+    pane.style.transform = "";
+    pane.hidden = !motionView.visible || pane !== motionView.pane;
+  }
+  for (const fragment of contentEl.querySelectorAll(".finish-copy, .finish-badge")) {
+    fragment.style.opacity = "";
+    fragment.style.transform = "";
+  }
+  contentEl.hidden = !motionView.visible;
+  contentEl.style.width = "";
+  contentEl.style.height = "";
+}
+
 function render() {
   if (!contentEl) return;
+  const meeting = contentEl.querySelector(":scope > .meeting");
+  const finished = contentEl.querySelector(":scope > .finished");
+  const error = contentEl.querySelector(":scope > .error-banner");
+  const noticeState = ["saving", "processing", "finished", "capture-error"].includes(currentState);
+  const pane = noticeState ? finished : currentState === "error" ? error : meeting;
+  const visible = currentMeta.visible !== false;
+  const request = prepareMotion({ pane, visible, key: noticeState ? currentState : pane.className });
+  setAccessible(contentEl, visible);
+  if (!visible) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+    if (request) scheduleMotion(request);
+    else if (!pendingMotion && !motionAnimations.size) contentEl.hidden = true;
+    return;
+  }
   contentEl.hidden = false;
-  const meeting = contentEl.querySelector(".meeting");
+  contentEl.style.width = "";
+  contentEl.style.height = "";
   const recording = currentState === "recording" || currentState === "video-enabled";
-  const specialState = currentState === "finished" || currentState === "error";
+  const specialState = noticeState || currentState === "error";
   const activeElement = contentEl.getRootNode().activeElement;
   meeting.hidden = specialState;
-  contentEl.querySelector(".error-banner").hidden = currentState !== "error";
-  contentEl.querySelector(".finished").hidden = currentState !== "finished";
+  error.hidden = currentState !== "error";
+  for (const panel of [meeting, finished, error]) setAccessible(panel, panel === pane);
+  finished.hidden = !noticeState;
+  const noticeChanged = finished.dataset.status !== currentState;
+  finished.dataset.status = currentState;
+  const noticeKey = { saving: "saving", processing: "processing", finished: "finished", "capture-error": "captureError" }[currentState];
+  contentEl.dataset.panel = noticeState ? "finished" : currentState === "error" ? "error" : "meeting";
+  contentEl.dataset.expanded = String(recording && isExpanded);
+  if (noticeKey && noticeChanged) {
+    finished.querySelector(".finish-copy strong").textContent = t(`banner.${noticeKey}Title`);
+    finished.querySelector(".finish-copy span").textContent = t(`banner.${noticeKey}Copy`);
+    finished.querySelector(".finish-badge").innerHTML = icon(currentState === "finished" ? "check" : currentState === "capture-error" ? "info" : "file-text", { size: 17 });
+  }
 
   const start = contentEl.querySelector("#start-capture");
-  start.disabled = currentState === "starting" || recording;
+  start.disabled = currentState !== "idle";
   start.setAttribute("aria-busy", String(currentState === "starting"));
   setAccessible(contentEl.querySelector(".start-controls"), !recording && !specialState);
   setAccessible(contentEl.querySelector(".controls"), recording);
@@ -159,12 +409,13 @@ function render() {
   );
   if (focusUnavailable) {
     let destination = start;
-    if (currentState === "finished") destination = contentEl.querySelector("#view-recording");
+    if (noticeState) destination = contentEl.querySelector("#view-recording");
     else if (currentState === "error") destination = contentEl.querySelector(".error-banner");
     else if (recording) destination = contentEl.querySelector("#stop-capture");
     else if (start.disabled) destination = meeting;
     destination.focus({ preventScroll: true });
   }
+  scheduleMotion(request);
 }
 
 function clamp(value, min, max) {
@@ -225,6 +476,7 @@ function wireDragEvents() {
   contentEl.addEventListener("pointerdown", (event) => {
     if (event.target instanceof Element && event.target.closest("button")) return;
 
+    finishMotion();
     const rect = contentEl.getBoundingClientRect();
     dragState = {
       pointerId: event.pointerId,
@@ -266,8 +518,8 @@ function wireDragEvents() {
   contentEl.addEventListener("pointercancel", finishDrag);
 }
 
-export async function showBanner({ onStart, onStop }) {
-  callbacks = { onStart, onStop };
+export async function showBanner({ onStart, onStop, onDismiss }) {
+  callbacks = { onStart, onStop, onDismiss };
   if (hostEl || bannerReady) return;
   bannerReady = true;
 
@@ -284,8 +536,13 @@ export async function showBanner({ onStart, onStop }) {
   const shadowRoot = hostEl.attachShadow({ mode: "open" });
   shadowRoot.innerHTML = `<link rel="stylesheet" href="${chrome.runtime.getURL("src/shared/theme.css")}">
     <style>
-      #content { position: fixed; right: 16px; bottom: 16px; z-index: 2147483647; font-family: Inter, system-ui, sans-serif; touch-action: none; }
-      .banner { width: 320px; max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; scrollbar-width: thin; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); box-shadow: 0 12px 32px var(--shadow); color: var(--text-primary); padding: 12px; }
+      #content { --ease-out: cubic-bezier(0.23, 1, 0.32, 1); --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1); --motion-enter: 250ms; --motion-exit: 150ms; --motion-swap: 150ms; --motion-reduced: 120ms; --motion-distance: 4px; position: fixed; right: 16px; bottom: 16px; z-index: 2147483647; font-family: Inter, system-ui, sans-serif; touch-action: none; }
+      .banner { width: 320px; max-width: calc(100vw - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; scrollbar-width: thin; box-sizing: border-box; position: relative; background: transparent; border: 1px solid transparent; color: var(--text-primary); padding: 12px; }
+      .banner-surface { position: absolute; inset: 0; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); box-shadow: 0 12px 32px var(--shadow); border-radius: 28px; pointer-events: none; transform-origin: 0 0; }
+      #content[data-panel="finished"] .banner-surface { border-radius: 16px; }
+      #content[data-panel="error"] .banner-surface { border-radius: 999px; }
+      #content[data-panel="meeting"][data-expanded="true"] .banner-surface { border-radius: 20px; }
+      .motion-snapshot, .motion-snapshot * { pointer-events: none !important; transition: none !important; animation: none !important; }
       .pill { border-radius: 999px; }
       .recording-top, .recording-copy, .controls, .brand-copy, .source-label, .source-status, .info-row, .finish-badge, .secondary-button, .primary-button, .danger-button, .icon-button { display: flex; align-items: center; }
       .recording-top { justify-content: space-between; gap: 8px; min-height: 32px; }
@@ -311,14 +568,13 @@ export async function showBanner({ onStart, onStop }) {
       .info-row { gap: 8px; margin-top: 12px; color: var(--text-secondary); font-size: 11px; line-height: 1.35; align-items: flex-start; }
       .info-row svg { flex: 0 0 auto; margin-top: 1px; }
       .info-row span { min-width: 0; }
-      .finished { border-radius: 20px; display: flex; align-items: center; gap: 10px; width: 430px; flex-wrap: wrap; }
+      .finished { border-radius: 16px; display: flex; align-items: center; gap: 10px; width: 430px; flex-wrap: wrap; }
       .finish-badge { justify-content: center; width: 30px; height: 30px; flex: 0 0 auto; border-radius: 50%; background: var(--accent-green); color: #fff; }
-      .finish-copy { flex: 1; }
+      .finish-copy { flex: 1 1 160px; }
+      .finish-badge { transition: background-color var(--motion-swap) var(--ease-out), color var(--motion-swap) var(--ease-out); }
       .finished .icon-button { margin-left: -2px; }
       [hidden] { display: none !important; }
       .meeting {
-        --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-        --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
         --state-duration: 180ms;
         --panel-duration: 300ms;
         border-radius: 28px;
@@ -370,7 +626,12 @@ export async function showBanner({ onStart, onStop }) {
         .timer, .controls .icon-button, button { transform: none !important; transition: opacity 120ms var(--ease-out), background-color 120ms var(--ease-out); transition-delay: 0ms !important; }
         .controls, .meeting[data-recording="true"] .controls, .meeting[data-recording="true"] .controls .icon-button, .meeting[data-recording="true"] .start-controls { transition-duration: 120ms; }
       }
-    </style><div id="content">${renderMeeting()}${renderError()}${renderFinished()}</div>`;
+      .finished[data-status="saving"] .finish-badge, .finished[data-status="processing"] .finish-badge { color: var(--accent-blue); background: color-mix(in srgb, var(--accent-blue) 14%, transparent); }
+      .finished[data-status="capture-error"] .finish-badge { color: var(--accent-red); background: color-mix(in srgb, var(--accent-red) 14%, transparent); }
+      .finish-copy strong { font-size: 14px; line-height: 20px; text-wrap: balance; }
+      .finish-copy span, .open-error { font-size: 12px; line-height: 16px; text-wrap: pretty; }
+      .open-error { color: var(--accent-red); flex-basis: 100%; }
+    </style><div id="content" hidden><div class="banner-surface" aria-hidden="true"></div>${renderMeeting()}${renderError()}${renderFinished()}</div>`;
   contentEl = shadowRoot.getElementById("content");
   wireDragEvents();
   wireEvents();
@@ -379,14 +640,19 @@ export async function showBanner({ onStart, onStop }) {
       if (!isDragging && Number.isFinite(bannerPosition.offset)) applyBannerPosition(bannerPosition, true);
     }).observe(contentEl);
   }
+  window.matchMedia?.("(prefers-reduced-motion: reduce)").addEventListener?.("change", finishMotion);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") finishMotion();
+  });
   window.addEventListener("resize", () => {
+    finishMotion();
     if (!isDragging && Number.isFinite(bannerPosition.offset)) applyBannerPosition(bannerPosition, true);
   });
 
   chrome.storage.local.get({ [BANNER_POSITION_KEY]: null }, ({ [BANNER_POSITION_KEY]: bannerPosition }) => {
     applyBannerPosition(bannerPosition);
-    render();
     document.body.appendChild(hostEl);
+    render();
     applyBannerPosition(bannerPosition, true);
   });
 }

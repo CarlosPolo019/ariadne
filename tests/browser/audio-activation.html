@@ -1,0 +1,10 @@
+<!doctype html>
+<html><body><button id="unlock">Activate audio</button><script type="module">
+import { resumeAudioContext } from '/src/webrtc-bootstrap/audio-activation.js';
+window.audio = new AudioContext();
+window.unlocked = false;
+window.activationError = null;
+resumeAudioContext(window.audio).then(() => { window.unlocked = true; }, error => { window.activationError = error.message; });
+document.getElementById('unlock').click(); // A synthetic click must not unlock audio.
+window.activationReady = true;
+</script></body></html>

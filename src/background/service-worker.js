@@ -63,7 +63,7 @@ async function ensureOffscreenDocument() {
       .createDocument({
         url: OFFSCREEN_URL,
         reasons: ["BLOBS"],
-        justification: "Escribir localmente el audio, video y transcripción de una reunión de Meet.",
+        justification: "Escribir localmente el audio, video y transcripción de una reunión de Meet o Teams.",
       })
       .finally(() => {
         offscreenCreationPromise = null;
@@ -128,6 +128,14 @@ async function discardSession({ sessionId, folderName }) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.target === "asterion-offscreen") return;
+  if (message.type === "asterion:open-history") {
+    const query = typeof message.sessionId === "string" && message.sessionId
+      ? `?${new URLSearchParams({ sessionId: message.sessionId })}` : "";
+    chrome.tabs.create({ url: chrome.runtime.getURL(`src/history/history.html${query}`) })
+      .then(tab => sendResponse({ ok: true, tabId: tab.id }))
+      .catch(error => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
   if (STORAGE_TYPES.has(message.type)) {
     (async () => {
       if (message.type === "asterion:session-starting") await registerActiveSession(message.sessionId, sender.tab?.id ?? null, message.meetingTitle);
@@ -191,11 +199,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type !== "asterion:get-video-preset") return;
 
   chrome.storage.local
-    .get({ videoPreset: "medium" })
+    .get({ videoPreset: "ultrafast" })
     .then(({ videoPreset }) => sendResponse({ videoPreset }))
     .catch((error) => {
-      console.error("[Ariadne] Could not read the saved video preset; using 'medium':", error);
-      sendResponse({ videoPreset: "medium" });
+      console.error("[Ariadne] Could not read the saved video preset; using 'ultrafast':", error);
+      sendResponse({ videoPreset: "ultrafast" });
     });
 
   return true;
@@ -210,7 +218,8 @@ function appendToHistory(meta) {
         (existing.processing.revision === meta.processing.revision && !existing.processing.pending && meta.processing.pending))) return;
     const entries = meetingHistory.filter((entry) => entry.sessionId !== meta.sessionId);
     const { sessionId, folderName, meetingTitle, startedAt, endedAt, durationMs, hasTranscript, transcriptStatus, hasVideo, recordingStatus, interruptionReason, transcriptExportStatus, audioConversionStatus, videoConversionStatus, hasAudioMp3, hasVideoMp4, processing } = meta;
-    entries.push({ sessionId, folderName, meetingTitle, startedAt, endedAt, durationMs, hasTranscript, transcriptStatus, hasVideo, recordingStatus, interruptionReason, transcriptExportStatus, audioConversionStatus, videoConversionStatus, hasAudioMp3, hasVideoMp4, processing });
+    const platform = meta.platform ?? existing?.platform ?? null;
+    entries.push({ sessionId, folderName, meetingTitle, platform, startedAt, endedAt, durationMs, hasTranscript, transcriptStatus, hasVideo, recordingStatus, interruptionReason, transcriptExportStatus, audioConversionStatus, videoConversionStatus, hasAudioMp3, hasVideoMp4, processing });
     entries.sort((a, b) => b.startedAt - a.startedAt);
     await chrome.storage.local.set({ meetingHistory: entries.slice(0, 200) });
   });
@@ -286,7 +295,7 @@ async function reconcileSessions() {
       } catch {} finally { clearTimeout(timer); }
       if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    if (status?.sessionId !== sessionId) await finalizeAbandonedSession(sessionId);
+    if (status?.sessionId !== sessionId && !status?.drainingSessionIds?.includes(sessionId)) await finalizeAbandonedSession(sessionId);
   }
   await updateRecoveryAlarm();
   return result;

@@ -1,6 +1,7 @@
 // src/settings/settings.js
 import { icon } from "../shared/icons.js";
 import { initI18n } from "../shared/i18n/i18n.js";
+import { createStatusMotion } from "./status-motion.js";
 
 const { t } = await initI18n();
 
@@ -35,13 +36,14 @@ backButton.addEventListener("click", () => {
   }
 });
 
+const showStatus = createStatusMotion();
 function bindPreference(control, key, fallback, read, render, valid = () => true) {
   const status = document.createElement("p"); status.className = "setting-status"; status.id = `${control.id}-status`; status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite");
   const retry = document.createElement("button"); retry.type = "button"; retry.className = "retry-setting"; retry.textContent = t("settings.retry"); retry.hidden = true;
   control.closest(".setting-card").append(status, retry);
   control.setAttribute("aria-describedby", [control.getAttribute("aria-describedby"), status.id].filter(Boolean).join(" "));
   let confirmed = fallback, pending = false, loaded = false, timer, retryAction, ownedFocus = false;
-  const show = (message, failed = false) => { status.textContent = message; status.classList.toggle("is-error", failed); retry.hidden = !failed; };
+  const show = (message, failed = false, compact = false) => showStatus(status, retry, message, failed, compact);
   const busy = value => {
     if (value) ownedFocus = document.activeElement === control || document.activeElement === retry;
     pending = value; control.disabled = value || !loaded; retry.disabled = value; control.setAttribute("aria-busy", String(value));
@@ -49,7 +51,7 @@ function bindPreference(control, key, fallback, read, render, valid = () => true
   };
   const load = async () => {
     if (pending) return;
-    clearTimeout(timer); busy(true); show(t("settings.loading"));
+    clearTimeout(timer); busy(true); show(t("settings.loading"), false, true);
     try {
       const result = await chrome.storage.local.get({ [key]: fallback });
       confirmed = result[key]; loaded = true; render(confirmed); show("");
@@ -58,10 +60,10 @@ function bindPreference(control, key, fallback, read, render, valid = () => true
   };
   const save = async value => {
     if (pending || !loaded || !valid()) return;
-    clearTimeout(timer); render(value); busy(true); show(t("settings.saving"));
+    clearTimeout(timer); render(value); busy(true); show(t("settings.saving"), false, true);
     try {
       await chrome.storage.local.set({ [key]: value });
-      confirmed = value; show(t("settings.saved")); timer = setTimeout(() => show(""), 2000);
+      confirmed = value; show(t("settings.saved"), false, true); timer = setTimeout(() => show(""), 2000);
     } catch { render(confirmed); retryAction = () => save(value); show(t("settings.saveError"), true); }
     finally { busy(false); }
   };
@@ -70,7 +72,7 @@ function bindPreference(control, key, fallback, read, render, valid = () => true
   window.addEventListener("pagehide", () => clearTimeout(timer), { once: true });
   load();
 }
-bindPreference(videoPresetSelect, "videoPreset", "medium", () => videoPresetSelect.value, value => { videoPresetSelect.value = value; });
+bindPreference(videoPresetSelect, "videoPreset", "ultrafast", () => videoPresetSelect.value, value => { videoPresetSelect.value = value; });
 bindPreference(minimumMeetingDurationInput, "minimumMeetingDurationSeconds", 0, () => minimumMeetingDurationInput.valueAsNumber, value => {
   minimumMeetingDurationInput.value = Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }, () => minimumMeetingDurationInput.reportValidity());

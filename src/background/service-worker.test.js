@@ -177,10 +177,13 @@ describe("storage RPC and restored history", () => {
     chrome.runtime.sendMessage.mockResolvedValueOnce({ folderName: "durable-folder" });
     await dispatch({ type: "asterion:session-starting", sessionId: "s", meetingTitle: "Meeting" }, { tab: { id: 7 } });
     expect(chrome.storage.__store.activeRecordingSessions.s.folderName).toBe("durable-folder");
-    const meta = { type: "asterion:session-finalized", sessionId: "s", folderName: "durable-folder", startedAt: 100, endedAt: 200, recordingStatus: "incomplete" };
+    const meta = { type: "asterion:session-finalized", sessionId: "s", folderName: "durable-folder", platform: "teams", startedAt: 100, endedAt: 200, recordingStatus: "incomplete" };
     await dispatch(meta); await dispatch(meta);
     expect(chrome.storage.__store.meetingHistory).toHaveLength(1);
     expect(chrome.storage.__store.meetingHistory[0].recordingStatus).toBe("incomplete");
+    expect(chrome.storage.__store.meetingHistory[0].platform).toBe("teams");
+    await dispatch({ ...meta, platform: undefined });
+    expect(chrome.storage.__store.meetingHistory[0].platform).toBe("teams");
   });
   it("recreates offscreen once for concurrent transport recovery", async () => {
     await import("./service-worker.js");
@@ -245,6 +248,18 @@ describe("recovery and deletion RPCs", () => {
       expect(chrome.runtime.sendMessage.mock.calls.some(([message]) => message.type === "asterion:session-ended")).toBe(false);
     } finally { vi.useRealTimers(); }
   });
+
+  it.each([null, "next-session"])("preserves a draining session when the active capture is %s, but recovers it after ownership disappears", async activeSessionId => {
+    const { registerActiveSession, recoverPendingSessions } = await import("./service-worker.js");
+    await registerActiveSession("s", 7, "Meeting", "folder");
+    chrome.runtime.sendMessage.mockResolvedValue({ pending: true, recordings: [] });
+    chrome.tabs.sendMessage = vi.fn().mockResolvedValue({ sessionId: activeSessionId, drainingSessionIds: ["s"] });
+    await recoverPendingSessions();
+    expect(chrome.runtime.sendMessage.mock.calls.some(([message]) => message.type === "asterion:session-ended")).toBe(false);
+    chrome.tabs.sendMessage.mockResolvedValue({ sessionId: activeSessionId, drainingSessionIds: [] });
+    await recoverPendingSessions();
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "asterion:session-ended", sessionId: "s" }));
+  });
 });
 
 it("discovers a session whose history publication exhausted retries without reclassifying a completed capture", async () => {
@@ -267,4 +282,29 @@ it("does not let discovery overwrite newer finalized processing metadata", async
   const { recoverPendingSessions } = await import("./service-worker.js");
   await recoverPendingSessions();
   expect(chrome.storage.__store.meetingHistory).toEqual([newer]);
+});
+
+
+describe("open history from a content script", () => {
+  beforeEach(() => { vi.resetModules(); globalThis.chrome = baseChromeMock(); });
+
+  async function openHistory(sessionId) {
+    const listeners = [];
+    chrome.runtime.onMessage.addListener = callback => listeners.push(callback);
+    await import("./service-worker.js");
+    return new Promise(resolve => {
+      for (const listener of listeners) listener({ type: "asterion:open-history", sessionId }, { tab: { id: 42 } }, resolve);
+    });
+  }
+
+  it("opens an extension-owned URL with the requested ID encoded", async () => {
+    chrome.tabs.create = vi.fn(async () => ({ id: 7 }));
+    expect(await openHistory("session &1")).toEqual({ ok: true, tabId: 7 });
+    expect(chrome.tabs.create).toHaveBeenCalledWith({ url: "src/history/history.html?sessionId=session+%261" });
+  });
+
+  it("reports a failed tab opening without claiming success", async () => {
+    chrome.tabs.create = vi.fn(async () => { throw new Error("Tab opening failed"); });
+    expect(await openHistory("session-1")).toEqual({ ok: false, error: "Tab opening failed" });
+  });
 });

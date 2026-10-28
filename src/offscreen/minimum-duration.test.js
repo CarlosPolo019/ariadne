@@ -50,6 +50,8 @@ describe("minimum meeting duration storage lifecycle", () => {
     const result = await dispatch({ type: "asterion:session-starting", sessionId: "short", meetingTitle: "Prueba" }, { tab: { id: 7 } });
     const directory = await root.getDirectoryHandle(result.folderName);
     const state = JSON.parse(await (await (await directory.getFileHandle("capture-state.json")).getFile()).text());
+    expect(result).toMatchObject({ startedAt: state.startedAt,
+      minimumMeetingDurationSeconds: state.minimumMeetingDurationSeconds });
     return { directory, state, folderName: result.folderName };
   }
 
