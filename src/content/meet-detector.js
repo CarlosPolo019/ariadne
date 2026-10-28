@@ -35,6 +35,7 @@ function postToMainWorld(message) {
 }
 
 const deliveries = new Map();
+const drainingSessionIds = new Set();
 let storageError = null;
 let sessionId = null;
 let currentState = "idle";
@@ -275,6 +276,9 @@ window.addEventListener("message", (event) => {
     if (message.sessionId !== sessionId) return;
     const delivery = deliveries.get(message.sessionId);
     cutoffCaptions(delivery, message.endedAt);
+    // Keep recovery from closing this writer before pending deliveries finish,
+    // including when another capture has already started in this tab.
+    drainingSessionIds.add(message.sessionId);
     (async () => {
       clearInterval(delivery?.statusTimer);
       const [persistenceErrors, captionPersistenceErrors] = await Promise.all([delivery?.flush() ?? [], delivery?.captions.flush() ?? []]);
@@ -290,7 +294,10 @@ window.addEventListener("message", (event) => {
       }
       if (result?.error && (!sessionId || sessionId === message.sessionId)) { storageError = result.error; setState("error"); }
     })().catch((error) => { if (!sessionId || sessionId === message.sessionId) { storageError = error.message; setState("error"); } })
-      .finally(() => { if (!delivery?.captions.pending.size) deliveries.delete(message.sessionId); });
+      .finally(() => {
+        drainingSessionIds.delete(message.sessionId);
+        if (!delivery?.captions.pending.size) deliveries.delete(message.sessionId);
+      });
     sessionId = null;
     meetingTitle = null;
     startedAt = null;
@@ -306,6 +313,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "asterion:get-status") {
     sendResponse({
       sessionId,
+      drainingSessionIds: [...drainingSessionIds],
       platform: platform.id,
       inMeeting: isInActiveMeeting(),
       state: currentState,

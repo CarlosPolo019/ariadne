@@ -248,6 +248,18 @@ describe("recovery and deletion RPCs", () => {
       expect(chrome.runtime.sendMessage.mock.calls.some(([message]) => message.type === "asterion:session-ended")).toBe(false);
     } finally { vi.useRealTimers(); }
   });
+
+  it.each([null, "next-session"])("preserves a draining session when the active capture is %s, but recovers it after ownership disappears", async activeSessionId => {
+    const { registerActiveSession, recoverPendingSessions } = await import("./service-worker.js");
+    await registerActiveSession("s", 7, "Meeting", "folder");
+    chrome.runtime.sendMessage.mockResolvedValue({ pending: true, recordings: [] });
+    chrome.tabs.sendMessage = vi.fn().mockResolvedValue({ sessionId: activeSessionId, drainingSessionIds: ["s"] });
+    await recoverPendingSessions();
+    expect(chrome.runtime.sendMessage.mock.calls.some(([message]) => message.type === "asterion:session-ended")).toBe(false);
+    chrome.tabs.sendMessage.mockResolvedValue({ sessionId: activeSessionId, drainingSessionIds: [] });
+    await recoverPendingSessions();
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "asterion:session-ended", sessionId: "s" }));
+  });
 });
 
 it("discovers a session whose history publication exhausted retries without reclassifying a completed capture", async () => {

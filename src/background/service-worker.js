@@ -287,7 +287,7 @@ async function reconcileSessions() {
       } catch {} finally { clearTimeout(timer); }
       if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    if (status?.sessionId !== sessionId) await finalizeAbandonedSession(sessionId);
+    if (status?.sessionId !== sessionId && !status?.drainingSessionIds?.includes(sessionId)) await finalizeAbandonedSession(sessionId);
   }
   await updateRecoveryAlarm();
   return result;
