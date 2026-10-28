@@ -20,7 +20,7 @@ export function getMeetingPlatform(url = location.href) {
   };
   return {
     id: "meet",
-    isInActiveMeeting: () => findByIconText("call_end") !== null,
+    isInActiveMeeting: () => findByIconText("call_end", { visible: true }) !== null,
     getTitle: () => document.title?.trim() && document.title.trim() !== "Meet" ? document.title.trim() : "Reunión sin título",
     observeMuteState,
     observeCaptions: enableCaptionsAndObserve,

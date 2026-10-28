@@ -359,7 +359,7 @@ export class SessionWriter {
           if (job.stream === "video") {
             let response;
             try { response = await chrome.runtime.sendMessage({ type: "asterion:get-video-preset" }); } catch {}
-            args = ["-fps_mode", "vfr", "-preset", response?.videoPreset ?? "medium"];
+            args = ["-fps_mode", "vfr", "-preset", response?.videoPreset ?? "ultrafast"];
           }
           sendConversionMessage({ type: "asterion:conversion-started", sessionId: this.sessionId, meetingTitle: this.meetingTitle, stream: job.stream });
           return { reuseOutput: job.outputReady && await hasFile(this.meetingHandle, job.stream === "meeting" ? "audio-reunion.mp3" : "video-reunion.mp4"), inputs, inputExt: "webm", outputExt: job.stream === "meeting" ? "mp3" : "mp4", args, normalizeAvStreams: job.stream === "video",

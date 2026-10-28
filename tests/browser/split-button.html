@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><link rel="stylesheet" href="/src/shared/theme.css"><link rel="stylesheet" href="/src/shared/split-button.css"></head>
+<body style="margin:0;font-family:Arial"><div id="slot" style="position:fixed;right:16px;bottom:16px"></div><script type="module">
+import { createSplitButton } from '/src/shared/split-button.js';
+const control = createSplitButton({ label: 'Télécharger Markdown', menuLabel: 'Format de téléchargement', value: 'md', options: [{value:'txt',label:'Texte (.txt)'},{value:'md',label:'Markdown (.md)'},{value:'json',label:'JSON (.json)'}], onAction() {}, onSelect() {} });
+document.getElementById('slot').append(control.element);
+window.runSplitButtonLayoutTest = async () => {
+  const trigger = control.element.querySelector('.split-trigger'); trigger.click();
+  const menu = document.querySelector('.split-menu'), rect = menu.getBoundingClientRect();
+  if (rect.left < 8 || rect.right > innerWidth - 8 || rect.top < 8 || rect.bottom > trigger.getBoundingClientRect().top) throw new Error('Narrow menu must fit and open above its trigger');
+  window.dispatchEvent(new Event('resize'));
+  if (document.querySelector('.split-menu')) throw new Error('Resize must settle the menu');
+  control.destroy(); return {passed:true,screen:'split-button',width:innerWidth};
+};
+</script></body></html>

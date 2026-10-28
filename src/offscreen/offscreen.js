@@ -117,7 +117,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       operation.catch(() => deletions.delete(writer.sessionId));
       return operation;
     }
-    if (message.type === "asterion:session-starting") return { folderName: writer.folderName, ...writer.getStorageSnapshot() };
+    if (message.type === "asterion:session-starting") return {
+      folderName: writer.folderName, ...writer.getStorageSnapshot(),
+      startedAt: writer.startedAt, minimumMeetingDurationSeconds: writer.minimumMeetingDurationSeconds,
+    };
     if (message.type === "asterion:chunk") {
       const ack = await writer.writeChunk(message.stream, base64ToArrayBuffer(message.bufferBase64), message);
       return { committed: true, ...ack };

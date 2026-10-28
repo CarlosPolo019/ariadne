@@ -1,0 +1,13 @@
+.split-button { display: inline-flex; align-items: stretch; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-button); color: var(--text-primary); flex: none; }
+.split-button button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 6px 10px; border: 0; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; border-radius: 7px; }
+.split-button .split-trigger { border-left: 1px solid var(--border); border-radius: 0 7px 7px 0; min-width: 30px; padding: 6px 8px; }
+.split-button button:focus-visible, .split-menu button:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+.split-menu { position: fixed; z-index: 20; min-width: min(190px, calc(100vw - 16px)); max-width: calc(100vw - 16px); box-sizing: border-box; padding: 4px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated); box-shadow: 0 8px 24px var(--shadow); }
+.split-menu button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px; border: 0; border-radius: 6px; color: var(--text-primary); background: transparent; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
+.split-check { display: inline-block; flex: none; width: 14px; color: var(--accent-blue); }
+.download-feedback { flex-basis: 100%; margin: 0; font-size: 12px; color: var(--accent-red); }
+.download-feedback:empty { display: none; }
+@media (hover: hover) and (pointer: fine) { .split-button button:hover, .split-menu button:hover, .split-menu button:focus-visible { background: var(--bg-button); } }
+
+.split-icon { display: inline-flex; }
+.split-icon[hidden] { display: none; }

@@ -1,14 +1,6 @@
 import { runFfmpegAttempt } from "./ffmpeg-client.js";
 
 export const retryDelay = (attempt) => (180 + 8 ** (attempt % 6 - 1)) * 1000;
-export async function deadline(operation, ms, onTimeout) {
-  let timer;
-  try {
-    return await Promise.race([operation, new Promise((_, reject) => {
-      timer = setTimeout(() => { onTimeout?.(); reject(new Error("JOB_TIMEOUT")); }, ms);
-    })]);
-  } finally { clearTimeout(timer); }
-}
 export const terminal = (job) => ["succeeded", "failed"].includes(job.state);
 
 // Descriptors are durable; buffers and controllers exist only during an attempt.
@@ -47,7 +39,7 @@ export class ConversionQueue {
       entry.controller?.abort();
       this.jobs.delete(key);
     }
-    // Wait for physical writes, including work that outlived a deadline.
+    // Wait for physical writes, before allowing deletion of the session.
     await Promise.allSettled(entries.flatMap(([, entry]) => [entry.operation, entry.settlement].filter(Boolean)));
     this.wake();
   }
@@ -72,7 +64,8 @@ export class ConversionQueue {
             if (handlers.execute) {
               await handlers.execute(controller.signal, token);
             } else {
-              const input = await deadline(handlers.input(controller.signal), 120000, () => controller.abort());
+              const input = await handlers.input(controller.signal);
+              if (controller.signal.aborted) throw new Error("Obsolete conversion attempt");
               const bytes = input.reuseOutput ? null : await this.attempt({ ...input, signal: controller.signal });
               if (job.attemptId !== token || controller.signal.aborted) throw new Error("Obsolete conversion attempt");
               await handlers.publish(bytes, token, controller.signal);
@@ -80,7 +73,7 @@ export class ConversionQueue {
             if (job.attemptId !== token || controller.signal.aborted) throw new Error("Obsolete processing attempt");
           })();
           try {
-            await deadline(entry.operation, handlers.timeoutMs ?? 1680000, () => { controller.abort(); job.attemptId = `${token}:cancelled`; });
+            await entry.operation;
             job.state = "succeeded"; job.error = null;
           } catch (error) {
             controller.abort();

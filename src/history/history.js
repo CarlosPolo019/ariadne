@@ -3,6 +3,8 @@ import { icon } from "../shared/icons.js";
 import { formatSegmentTimestamp, transcriptToTxt, transcriptToMarkdown } from "../lib/transcript-export.js";
 import { meetingDownloadFilename } from "../lib/download-filename.js";
 import { initI18n } from "../shared/i18n/i18n.js";
+import { createTranscriptSearch } from "./transcript-search.js";
+import { createSplitButton } from "../shared/split-button.js";
 
 const { t, localeTag } = await initI18n();
 document.title = t("history.pageTitle");
@@ -15,8 +17,13 @@ const resultsCountEl = document.getElementById("results-count");
 const sortSelect = document.getElementById("sort-select");
 const meetingsListEl = document.getElementById("meetings-list");
 const detailPanelEl = document.getElementById("detail-panel");
+let linkedSessionId = new URLSearchParams(location.search).get("sessionId");
+let linkedSessionStatus = "waiting";
 let detailSession = null;
 let nextDetailId = 0;
+let debugLogging = false;
+let transcriptDownloadFormat = "txt", formatSaveError = "", formatVersion = 0;
+const normalizeDownloadFormat = value => ["txt", "md", "json"].includes(value) ? value : "txt";
 let detailShell, meetingRegion, meetingFooter, deleteMeetingButton, meetingAnimation;
 let openMoreMenu = null;
 const pendingDeletes = new Set();
@@ -56,15 +63,17 @@ function downloadFile(file, suggestedName) {
   });
 }
 
-function viewFile(file) {
-  chrome.tabs.create({ url: URL.createObjectURL(file) });
-}
 
 const state = {
   meetings: [], search: "",
   filters: { transcript: false, video: false, audioOnly: false, thisMonth: false, thisYear: false },
   calendarMonth: startOfMonth(new Date()), selectedDay: null, sort: "newest", selectedMeetingId: null, selectedTab: null,
 };
+const transcriptSearch = createTranscriptSearch({
+  read: async meeting => (await readActiveFile(meeting, "transcript")).value,
+  onChange: () => renderMeetings(),
+});
+state.transcriptSearch = transcriptSearch;
 
 const FILTERS = () => [["all", t("history.filterAll")], ["transcript", t("history.filterTranscript")], ["video", t("history.filterVideo")], ["audioOnly", t("history.filterAudioOnly")], ["thisMonth", t("history.filterThisMonth")], ["thisYear", t("history.filterThisYear")]];
 
@@ -92,7 +101,8 @@ export function deriveVisibleMeetings(currentState) {
   const visible = currentState.meetings.filter((meeting) => {
     const startedAt = new Date(meeting.startedAt);
     if (Number.isNaN(startedAt.getTime())) return false;
-    if (normalizedSearch && !titleFor(meeting).toLocaleLowerCase().includes(normalizedSearch)) return false;
+    if (normalizedSearch && !titleFor(meeting).toLocaleLowerCase().includes(normalizedSearch)
+      && !currentState.transcriptSearch?.textFor(meeting).includes(normalizedSearch)) return false;
     if (transcript && !meeting.hasTranscript) return false;
     if (video && !meeting.hasVideo) return false;
     if (audioOnly && meeting.hasVideo) return false;
@@ -187,7 +197,15 @@ function renderKpis() {
 function renderMeetings() {
   closeOpenMoreMenu(false, true);
   const meetings = deriveVisibleMeetings(state); resultsCountEl.textContent = t("history.resultsCount", { count: meetings.length }); meetingsListEl.replaceChildren();
-  if (!meetings.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = t("history.emptyState"); meetingsListEl.appendChild(empty); return; }
+  const { pending, failed } = transcriptSearch.status();
+  resultsCountEl.setAttribute("aria-live", "polite");
+  if (pending) resultsCountEl.textContent += ` · ${t("history.searchingTranscripts")}`;
+  if (failed) resultsCountEl.textContent += ` · ${t("history.transcriptSearchError")}`;
+  meetingsListEl.setAttribute("aria-busy", String(pending));
+  if (!meetings.length && !pending && !failed) {
+    const empty = document.createElement("p"); empty.className = "empty-state";
+    empty.textContent = t("history.emptyState"); meetingsListEl.appendChild(empty);
+  }
   meetings.forEach((meeting) => meetingsListEl.appendChild(createMeetingCard(meeting)));
 }
 
@@ -205,6 +223,7 @@ document.addEventListener("click", event => {
   if (openMoreMenu && !openMoreMenu.menu.contains(event.target) && event.target !== openMoreMenu.button) closeOpenMoreMenu();
 });
 function openMeetingDetail(meeting, tab, event) {
+  linkedSessionId = null; // A user selection takes precedence over a pending link.
   if (state.selectedMeetingId !== meetingId(meeting)) state.selectedTab = null;
   state.selectedMeetingId = meetingId(meeting);
   if (tab) state.selectedTab = tab;
@@ -226,6 +245,7 @@ function createMeetingCard(meeting) {
     const wasOpen = more.classList.contains("is-open");
     closeOpenMoreMenu(false, true);
     if (wasOpen) return;
+    closeDownloadMenus();
     more.classList.add("is-open"); more.setAttribute("aria-expanded", "true");
     const menu = document.createElement("div"); menu.className = "more-menu"; menu.setAttribute("role", "menu");
     const deleteItem = document.createElement("button"); deleteItem.type = "button"; deleteItem.className = "more-menu-item"; deleteItem.setAttribute("role", "menuitem");
@@ -250,7 +270,7 @@ function createMeetingCard(meeting) {
   header.append(title, moreWrap);
   const date = document.createElement("p"); date.className = "meeting-date"; date.textContent = formatMeetingDate(meeting);
   const chips = document.createElement("div"); chips.className = "file-chips";
-  [[meeting.hasTranscript, "file-text", t("common.transcript"), "transcript"], [true, "volume-2", t("common.audio"), "audio"], [meeting.hasVideo, "video", t("common.video"), "video"], [true, "braces", t("common.manifest"), "manifest"]].forEach(([available, iconName, label, tab]) => {
+  [[meeting.hasTranscript, "file-text", t("common.transcript"), "transcript"], [true, "volume-2", t("common.audio"), "audio"], [meeting.hasVideo, "video", t("common.video"), "video"], ...(debugLogging ? [[true, "braces", t("common.manifest"), "manifest"]] : [])].forEach(([available, iconName, label, tab]) => {
     const chip = document.createElement(available ? "button" : "span"); if (available) chip.type = "button"; chip.className = `file-chip${available ? " is-available" : " is-unavailable"}`;
     chip.innerHTML = icon(iconName, { size: 12, color: "currentColor" });
     chip.appendChild(document.createTextNode(label));
@@ -263,7 +283,7 @@ function createMeetingCard(meeting) {
   card.append(header, date, chips, detailsRow); return card;
 }
 
-function availableTabs(meeting) { return [[meeting.hasTranscript, "transcript", t("common.transcript")], [true, "audio", t("common.audio")], [meeting.hasVideo, "video", t("common.video")], [true, "manifest", t("common.manifest")]].filter(([available]) => available); }
+function availableTabs(meeting) { return [[meeting.hasTranscript, "transcript", t("common.transcript")], [true, "audio", t("common.audio")], [meeting.hasVideo, "video", t("common.video")], [debugLogging, "manifest", t("common.manifest")]].filter(([available]) => available); }
 function escapeHtml(value) { return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 function highlightJson(value) {
   const escaped = escapeHtml(JSON.stringify(value, null, 2));
@@ -286,28 +306,83 @@ async function readActiveFile(meeting, tab) {
     return { file, name: preferred };
   } catch { return { file: await (await directory.getFileHandle(fallback)).getFile(), name: fallback }; }
 }
+function closeDownloadMenus() {
+  detailSession?.transcriptActions?.close(false, true);
+  for (const page of detailSession?.pages.values() ?? []) page.footer?.downloadButton?.close(false, true);
+}
+function refreshDownloadFooters() {
+  for (const page of detailSession?.pages.values() ?? []) page.footer?.updateDownload?.();
+}
+function rememberDownloadFormat(format) {
+  transcriptDownloadFormat = format; formatSaveError = "";
+  const version = ++formatVersion;
+  refreshDownloadFooters();
+  Promise.resolve().then(() => chrome.storage.local.set({ transcriptDownloadFormat: format })).catch(() => {
+    if (version !== formatVersion) return;
+    formatSaveError = t("history.downloadFormatSaveError"); refreshDownloadFooters();
+  });
+}
 function createFileFooter(activeFile, meeting, tab) {
-  const downloadName = extension => {
-    const currentMeeting = state.meetings.find(entry => meetingId(entry) === meetingId(meeting)) ?? meeting;
-    return meetingDownloadFilename(currentMeeting.meetingTitle, t(`common.${tab}`), extension, t("common.untitledMeeting"));
-  };
+  const currentMeeting = () => state.meetings.find(entry => meetingId(entry) === meetingId(meeting)) ?? meeting;
+  const downloadName = extension => meetingDownloadFilename(currentMeeting().meetingTitle, t(`common.${tab}`), extension, t("common.untitledMeeting"));
   const footer = document.createElement("footer"); footer.className = "detail-footer";
   const fileRow = document.createElement("div"); fileRow.className = "detail-file-row";
-  const metadata = document.createElement("div"); metadata.className = "detail-file-meta"; const name = document.createElement("span"); name.className = "detail-file-name"; name.textContent = downloadName(activeFile.name.split(".").pop()); const size = document.createElement("span"); size.className = "detail-file-size"; size.textContent = formatFileSize(activeFile.file.size); metadata.append(name, size);
+  const metadata = document.createElement("div"); metadata.className = "detail-file-meta";
+  const name = document.createElement("span"); name.className = "detail-file-name";
+  const size = document.createElement("span"); size.className = "detail-file-size"; metadata.append(name, size);
   const actions = document.createElement("div"); actions.className = "detail-file-actions";
-  const view = document.createElement("button"); view.type = "button"; view.className = "detail-action"; view.innerHTML = `${icon("external-link", { size: 12, color: "currentColor" })}<span>${t("common.open")}</span>`; view.addEventListener("click", () => viewFile(activeFile.file));
-  const download = document.createElement("button"); download.type = "button"; download.className = "detail-action"; download.innerHTML = `${icon("download", { size: 12, color: "currentColor" })}<span>${t("common.download")}</span>`; download.addEventListener("click", () => downloadFile(activeFile.file, downloadName(activeFile.name.split(".").pop())));
-  actions.append(view, download);
-  if (tab === "transcript") {
-    const downloadTxt = document.createElement("button"); downloadTxt.type = "button"; downloadTxt.className = "detail-action"; downloadTxt.innerHTML = `${icon("download", { size: 12, color: "currentColor" })}<span>${t("history.downloadTxt")}</span>`;
-    downloadTxt.addEventListener("click", () => downloadFile(new Blob([transcriptToTxt(activeFile.value)], { type: "text/plain" }), downloadName("txt")));
-    const downloadMd = document.createElement("button"); downloadMd.type = "button"; downloadMd.className = "detail-action"; downloadMd.innerHTML = `${icon("download", { size: 12, color: "currentColor" })}<span>${t("history.downloadMarkdown")}</span>`;
-    downloadMd.addEventListener("click", () => downloadFile(new Blob([transcriptToMarkdown(activeFile.value, titleFor(meeting))], { type: "text/markdown" }), downloadName("md")));
-    actions.append(downloadTxt, downloadMd);
+  const feedback = document.createElement("p"); feedback.className = "download-feedback"; feedback.setAttribute("role", "status");
+  let prepared = activeFile, revision = null, request = 0;
+  function prepareTranscript(format) {
+    if (format === "json") return activeFile;
+    return { file: new Blob([format === "md" ? transcriptToMarkdown(activeFile.value, titleFor(currentMeeting())) : transcriptToTxt(activeFile.value)],
+      { type: format === "md" ? "text/markdown" : "text/plain" }), name: `transcript.${format}` };
   }
-  fileRow.append(metadata, actions); footer.append(fileRow); return footer;
+  function updateMetadata() {
+    name.textContent = downloadName(prepared.name.split(".").pop()); size.textContent = formatFileSize(prepared.file.size);
+  }
+  async function download(format = transcriptDownloadFormat) {
+    button.setDisabled(true); feedback.textContent = "";
+    try {
+      const target = tab === "transcript" ? prepareTranscript(format) : ["audio", "video"].includes(tab) ? await readActiveFile(currentMeeting(), tab) : activeFile;
+      if (detailSession?.meetingId !== meetingId(meeting) || !state.meetings.some(item => meetingId(item) === meetingId(meeting))) return;
+      prepared = target; updateMetadata();
+      downloadFile(target.file, downloadName(target.name.split(".").pop()));
+    } catch { if (footer.isConnected) feedback.textContent = t("history.downloadFileError"); }
+    finally { button.setDisabled(false); }
+  }
+  const button = createSplitButton({ label: t("common.download"), iconHtml: icon("download", { size: 12, color: "currentColor" }),
+    menuLabel: t("history.downloadFormats"), value: transcriptDownloadFormat,
+    options: tab === "transcript" ? ["txt", "md", "json"].map(value => ({ value, label: t(`history.downloadOption.${value}`) })) : [],
+    onOpen: () => closeOpenMoreMenu(false, true), onAction: () => void download(),
+    onSelect: format => { rememberDownloadFormat(format); void download(format); } });
+  footer.downloadButton = button;
+  footer.updateDownload = () => {
+    if (tab === "transcript") {
+      prepared = prepareTranscript(transcriptDownloadFormat);
+      button.setLabel(t("history.downloadSelectedFormat", { format: transcriptDownloadFormat.toUpperCase() }));
+      button.setValue(transcriptDownloadFormat); feedback.textContent = formatSaveError;
+    } else if (["audio", "video"].includes(tab)) {
+      const nextRevision = `${currentMeeting().folderName}:${fileRevision(currentMeeting(), tab)}`;
+      if (nextRevision !== revision) {
+        revision = nextRevision; const token = ++request;
+        readActiveFile(currentMeeting(), tab).then(target => {
+          if (!footer.isConnected || token !== request) return;
+          prepared = target; updateMetadata();
+        }).catch(() => {});
+      }
+    }
+    updateMetadata();
+  };
+  actions.append(button.element); fileRow.append(metadata, actions); footer.append(fileRow, feedback);
+  footer.updateDownload(); return footer;
 }
+
 function disposePage(page) {
+  page.footer?.downloadButton?.destroy();
+  page.tabMotion?.forEach(animation => animation.cancel());
+  page.markerMotion?.cancel();
+  page.tab.querySelectorAll('.is-exiting').forEach(marker => marker.remove());
   if (page.media) { page.media.pause(); page.media.removeAttribute("src"); page.media.load(); }
   if (page.url) URL.revokeObjectURL(page.url);
   page.media = null; page.url = null;
@@ -316,7 +391,9 @@ function closeDetailSession() {
   clearTimeout(recoveryPoll);
   if (!detailSession) return;
   meetingAnimation?.cancel();
+  clearTimeout(detailSession.copyFeedbackTimer);
   detailSession.closed = true;
+  detailSession.transcriptActions?.destroy();
   for (const page of detailSession.pages.values()) disposePage(page);
   detailSession = null;
 }
@@ -467,13 +544,94 @@ function fileRevision(meeting, key) {
   if (key === "transcript") return `${meeting.hasTranscript}:${meeting.transcriptExportStatus}`;
   return JSON.stringify([meeting.transcriptExportStatus, meeting.audioConversionStatus, meeting.videoConversionStatus, meeting.recordingStatus]);
 }
+// The reader is shared with the transcript panel, independently of the selected tab.
+function readSessionTranscript(session) {
+  const revision = `${session.meeting.folderName}:${fileRevision(session.meeting, "transcript")}`;
+  if (session.transcriptRevision !== revision) {
+    session.transcriptRevision = revision;
+    session.transcriptRead = readActiveFile(session.meeting, "transcript").then(file => {
+      if (!Array.isArray(file.value) || !file.value.every(segment => typeof segment.text === "string" && typeof segment.speaker === "string" && Number.isFinite(segment.startTime))) {
+        throw new Error("Invalid transcript");
+      }
+      return file;
+    });
+  }
+  return session.transcriptRead;
+}
+// Keep the integration unavailable until a transcript transfer method is defined.
+const TRANSCRIPT_AI_ENABLED = false;
+const aiProviders = { chatgpt: "https://chatgpt.com/", claude: "https://claude.ai/new", grok: "https://grok.com/" };
+export function transcriptAiUrl(provider, text) {
+  if (!Object.hasOwn(aiProviders, provider)) throw new Error("Unknown provider");
+  const url = new URL(aiProviders[provider]);
+  url.searchParams.set("q", text);
+  return url.href;
+}
+function createTranscriptActions(session, navigation) {
+  const container = document.createElement("div"); container.className = "transcript-actions";
+  const status = document.createElement("span"); status.className = "transcript-action-status";
+  status.setAttribute("role", "status"); status.setAttribute("aria-live", "polite"); status.setAttribute("aria-atomic", "true");
+  const resetCopyFeedback = () => {
+    clearTimeout(session.copyFeedbackTimer);
+    session.transcriptActions.setIconHtml(icon("copy", { size: 12, color: "currentColor" }));
+    session.transcriptActions.element.querySelector(".split-primary").removeAttribute("aria-label");
+  };
+  session.resetCopyFeedback = resetCopyFeedback;
+  const action = async provider => {
+    const revision = session.actionsRevision;
+    if (!session.transcriptFile || session.closed) return;
+    const text = transcriptToMarkdown(session.transcriptFile.value, titleFor(session.meeting));
+    const current = () => !session.closed && session.actionsRevision === revision;
+    resetCopyFeedback();
+    session.transcriptActions.setDisabled(true); status.textContent = "";
+    try {
+      if (provider) await chrome.tabs.create({ url: transcriptAiUrl(provider, text), active: true });
+      else await navigator.clipboard.writeText(text);
+      if (current() && !provider) {
+        session.transcriptActions.setIconHtml(icon("check", { size: 12, color: "var(--accent-green)" }));
+        session.transcriptActions.element.querySelector(".split-primary").setAttribute("aria-label", t("history.transcriptCopied"));
+        session.copyFeedbackTimer = setTimeout(resetCopyFeedback, 2000);
+      }
+    } catch {
+      if (current()) status.textContent = t(provider ? "history.aiOpenError" : "history.transcriptCopyError");
+    } finally {
+      if (current()) session.transcriptActions.setDisabled(false);
+    }
+  };
+  session.transcriptActions = createSplitButton({
+    label: t("history.copyTranscript"), iconHtml: icon("copy", { size: 12, color: "currentColor" }),
+    menuLabel: t("history.openWithAi"), optionType: "action", placement: "below",
+    options: [["chatgpt", "ChatGPT"], ["claude", "Claude"], ["grok", "Grok"]].map(([value, provider]) => ({ value, label: t("history.openInAi", { provider }) })),
+    onAction: () => action(), onSelect: action, onOpen: () => closeOpenMoreMenu(false, true),
+  });
+  session.transcriptActions.setDisabled(true);
+  container.append(session.transcriptActions.element, status); navigation.appendChild(container);
+  session.actionsContainer = container; session.actionsStatus = status;
+}
+function updateTranscriptActions(session) {
+  if (!session.transcriptActions) return;
+  const revision = `${session.meeting.hasTranscript}:${session.meeting.folderName}:${fileRevision(session.meeting, "transcript")}`;
+  if (session.actionsRevision === revision) return;
+  session.resetCopyFeedback();
+  session.actionsRevision = revision; session.transcriptFile = null;
+  session.transcriptActions.close(false, true); session.transcriptActions.setDisabled(true);
+  session.actionsContainer.hidden = !session.meeting.hasTranscript;
+  session.actionsStatus.textContent = session.meeting.hasTranscript ? t("history.preparingTranscript") : "";
+  if (!session.meeting.hasTranscript) { session.transcriptRevision = null; session.transcriptRead = null; return; }
+  readSessionTranscript(session).then(file => {
+    if (session.closed || session.actionsRevision !== revision) return;
+    session.transcriptFile = file; session.actionsStatus.textContent = ""; session.transcriptActions.setDisabled(false);
+  }, () => {
+    if (!session.closed && session.actionsRevision === revision) session.actionsStatus.textContent = t("history.transcriptReadError");
+  });
+}
 function loadPage(session, page) {
   if (page.pending || (page.file && !page.dirty)) return page.pending;
   if (page.media && !page.media.paused) return;
   const revision = page.revision;
   page.pending = (async () => {
     try {
-      const file = await readActiveFile(session.meeting, page.key);
+      const file = await (page.key === "transcript" ? readSessionTranscript(session) : readActiveFile(session.meeting, page.key));
       if (session.closed || session.pages.get(page.key) !== page) return;
       if (page.media && !page.media.paused) { page.dirty = true; return; }
       const position = page.content.scrollTop;
@@ -508,6 +666,7 @@ function loadPage(session, page) {
   return page.pending;
 }
 function selectPage(session, key, immediate = false, visit = true) {
+  closeDownloadMenus();
   state.selectedTab = key;
   const pages = [...session.pages.values()];
   for (const page of pages) {
@@ -532,6 +691,7 @@ function syncDetail(session, meeting) {
   // assigning Teams calls to Meet or guessing from a user-controlled title.
   session.metadata.textContent = [formatTimeRange(meeting), platformLabel].filter(Boolean).join(" · ");
   session.recovery.dispatchEvent(new CustomEvent("asterion:recovery-update", { detail: meeting }));
+  updateTranscriptActions(session);
   const available = availableTabs(meeting);
   const keys = available.map(([, key]) => key);
   let changed = false;
@@ -549,11 +709,16 @@ function syncDetail(session, meeting) {
       const tab = document.createElement("button"); tab.type = "button"; tab.className = "detail-tab";
       tab.id = `detail-${session.id}-${key}-tab`; tab.setAttribute("role", "tab");
       tab.innerHTML = `${icon(icons[key], { size: 14, color: "currentColor" })}<span>${label}</span>`;
+      let marker = null;
+      if (key === "audio" || key === "video") {
+        marker = document.createElement("span"); marker.className = "detail-playback-marker";
+        marker.hidden = true; marker.setAttribute("aria-hidden", "true"); tab.appendChild(marker);
+      }
       const panel = document.createElement("section"); panel.className = "detail-page"; panel.id = `detail-${session.id}-${key}-panel`;
       panel.setAttribute("role", "tabpanel"); panel.setAttribute("aria-labelledby", tab.id); tab.setAttribute("aria-controls", panel.id);
       const content = document.createElement("div"); content.className = `detail-tab-content is-${key}`;
       const loading = document.createElement("p"); loading.className = "detail-loading"; loading.textContent = t("history.loadingFile"); content.appendChild(loading); panel.appendChild(content);
-      page = { key, tab, panel, content, revision: fileRevision(meeting, key), dirty: false, pending: null, file: null, media: null, url: null };
+      page = { key, tab, marker, panel, content, revision: fileRevision(meeting, key), dirty: false, pending: null, file: null, media: null, url: null };
       tab.addEventListener("click", () => selectPage(session, key));
       tab.addEventListener("keydown", event => {
         const list = [...session.pages.keys()]; const index = list.indexOf(key);
@@ -565,10 +730,7 @@ function syncDetail(session, meeting) {
       page.revision = fileRevision(meeting, key); page.dirty = true;
       if (key !== "audio" && key !== "video" && page.file) loadPage(session, page);
     } else if (!page.file && previous !== meeting) page.dirty = true;
-    if (page.footer && page.file) {
-      page.footer.querySelector(".detail-file-name").textContent = meetingDownloadFilename(
-        meeting.meetingTitle, t(`common.${key}`), page.file.name.split(".").pop(), t("common.untitledMeeting"));
-    }
+    page.footer?.updateDownload?.();
     ordered.set(key, page);
   }
   session.pages = ordered;
@@ -584,11 +746,53 @@ function syncDetail(session, meeting) {
 function updatePlaybackStatus(session) {
   if (session.closed) return;
   const active = [...session.pages.values()].find(page => page.media && page.media === session.playingMedia && !page.media.paused && !page.media.ended);
-  for (const page of session.pages.values()) page.tab.classList.toggle("is-playing", page === active);
-  session.playback.hidden = !active;
-  session.pause.disabled = !active;
-  const label = active ? t(active.key === "video" ? "history.playingVideo" : "history.playingAudio") : "";
-  if (session.playbackLabel.textContent !== label) session.playbackLabel.textContent = label;
+  const pages = [...session.pages.values()];
+  const changed = pages.some(page => page.tab.classList.contains("is-playing") !== (page === active));
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  const duration = active ? 200 : 150;
+  const easing = "cubic-bezier(0.23, 1, 0.32, 1)";
+  const before = new Map();
+  if (changed) for (const page of pages) {
+    const rect = page.tab.getBoundingClientRect();
+    let surfaceScale = 1;
+    if (page.tabMotion?.some(animation => animation.effect?.pseudoElement === "::before")) {
+      const transform = getComputedStyle(page.tab, "::before").transform;
+      if (transform.startsWith("matrix(")) surfaceScale = Number(transform.slice(7).split(",")[0]);
+    }
+    before.set(page, { left: rect.left, width: rect.width * surfaceScale });
+    page.tabMotion?.forEach(animation => animation.cancel());
+    page.tab.querySelectorAll('.is-exiting').forEach(marker => marker.remove());
+    const wasPlaying = page.tab.classList.contains("is-playing");
+    if (wasPlaying && page !== active && page.marker && page.tab.animate && !document.hidden) {
+      const markerRect = page.marker.getBoundingClientRect(), tabRect = page.tab.getBoundingClientRect();
+      const copy = page.marker.cloneNode(true); copy.classList.add("is-exiting");
+      copy.style.position = "absolute"; copy.style.left = `${markerRect.left - tabRect.left}px`; copy.style.top = `${markerRect.top - tabRect.top}px`;
+      const opacity = getComputedStyle(page.marker).opacity;
+      page.tab.appendChild(copy);
+      const exit = copy.animate(reduced ? [{ opacity }, { opacity: 0 }] : [{ opacity, transform: "scale(1)" }, { opacity: 0, transform: "scale(0.9)" }], { duration: reduced ? 120 : 150, easing });
+      const remove = () => copy.remove(); exit.finished.then(remove, remove);
+    }
+    if (wasPlaying !== (page === active)) {
+      page.markerMotion?.cancel();
+      if (page.marker) page.marker.hidden = page !== active;
+      if (page === active && page.marker && page.tab.animate && !document.hidden) {
+        page.markerMotion = page.marker.animate(reduced ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 0, transform: "scale(0.9)" }, { opacity: 1, transform: "scale(1)" }], { duration: reduced ? 120 : 200, easing });
+      }
+    }
+  }
+  for (const page of session.pages.values()) {
+    page.tab.classList.toggle("is-playing", page === active);
+    if (page === active) page.tab.setAttribute("aria-description", t(page.key === "video" ? "history.playingVideo" : "history.playingAudio"));
+    else page.tab.removeAttribute("aria-description");
+  }
+  if (changed && !reduced && !document.hidden) for (const page of pages) {
+    if (!page.tab.animate) continue;
+    const old = before.get(page), next = page.tab.getBoundingClientRect();
+    if (!next.width) continue;
+    page.tabMotion = [];
+    if (old.left !== next.left) page.tabMotion.push(page.tab.animate([{ transform: `translateX(${old.left - next.left}px)` }, { transform: "translateX(0)" }], { duration, easing }));
+    if (old.width !== next.width) page.tabMotion.push(page.tab.animate([{ transform: `scaleX(${old.width / next.width})` }, { transform: "scaleX(1)" }], { duration, easing, pseudoElement: "::before" }));
+  }
 }
 function mountDetailShell() {
   if (detailShell) return;
@@ -609,7 +813,10 @@ function renderDetail(animate = false) {
   closeDetailSession(); meetingRegion.replaceChildren(); meetingFooter.hidden = !meeting;
   detailShell.classList.toggle("has-meeting", Boolean(meeting));
   if (!meeting) {
-    const placeholder = document.createElement("p"); placeholder.className = "detail-placeholder"; placeholder.textContent = t("history.selectMeetingPlaceholder"); meetingRegion.appendChild(placeholder); return;
+    const placeholder = document.createElement("p"); placeholder.className = "detail-placeholder"; placeholder.textContent = t(linkedSessionId
+      ? linkedSessionStatus === "waiting" ? "history.linkedMeetingWaiting" : "history.linkedMeetingNotFound"
+      : "history.selectMeetingPlaceholder");
+    placeholder.setAttribute("role", "status"); meetingRegion.appendChild(placeholder); return;
   }
   const header = document.createElement("header"); header.className = "detail-header";
   const title = document.createElement("h2"); title.className = "detail-title";
@@ -618,21 +825,13 @@ function renderDetail(animate = false) {
   const recovery = createRecoveryPanel(meeting); header.append(title, date, metadata, recovery);
   const tablist = document.createElement("div"); tablist.className = "detail-tabs"; tablist.setAttribute("role", "tablist");
   const navigation = document.createElement("div"); navigation.className = "detail-navigation";
-  const playbackSlot = document.createElement("div"); playbackSlot.className = "playback-slot";
-  const playback = document.createElement("div"); playback.className = "playback-status"; playback.hidden = true;
-  const playbackLabel = document.createElement("span"); playbackLabel.setAttribute("role", "status");
-  const pause = document.createElement("button"); pause.type = "button"; pause.className = "detail-action"; pause.textContent = t("common.pause"); pause.disabled = true;
-  playback.append(playbackLabel, pause); playbackSlot.appendChild(playback);
   const viewport = document.createElement("div"); viewport.className = "detail-pager";
   const track = document.createElement("div"); track.className = "detail-track"; viewport.appendChild(track);
-  navigation.append(tablist, playbackSlot);
+  navigation.append(tablist);
   meetingRegion.append(header, navigation, viewport);
-  const session = { id: ++nextDetailId, meetingId: meetingId(meeting), meeting, pages: new Map(), title, date, metadata, recovery, tablist, track, playback, playbackLabel, pause, closed: false, playIntent: null, playingMedia: null };
+  const session = { id: ++nextDetailId, meetingId: meetingId(meeting), meeting, pages: new Map(), title, date, metadata, recovery, tablist, track, closed: false, playIntent: null, playingMedia: null };
   detailSession = session;
-  pause.addEventListener("click", () => {
-    session.playIntent = null; session.playingMedia?.pause();
-    if (playback.contains(document.activeElement)) session.pages.get(state.selectedTab)?.tab.focus();
-  });
+  if (TRANSCRIPT_AI_ENABLED) createTranscriptActions(session, navigation);
   syncDetail(session, meeting);
   if (focusInside) session.pages.get(state.selectedTab)?.tab.focus();
   if (hadMeeting && animate && meetingRegion.animate) {
@@ -675,19 +874,53 @@ function showDeleteDialog(meeting, opener) {
   confirm.dataset.meetingId = meetingId(meeting);
   document.addEventListener("keydown", onKeydown); cancel.focus();
 }
-function renderAllExceptDetail() { renderSidebar(); renderMeetings(); }
+function renderAllExceptDetail() { transcriptSearch.update(state.meetings, state.search); renderSidebar(); renderMeetings(); }
 
-searchInput.addEventListener("input", () => { state.search = searchInput.value; renderAllExceptDetail(); });
+searchInput.addEventListener("input", () => { state.search = searchInput.value; transcriptSearch.update(state.meetings, state.search, { retryErrors: true }); renderAllExceptDetail(); });
 sortSelect.addEventListener("change", () => { state.sort = sortSelect.value; renderMeetings(); });
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== "local" || !changes.meetingHistory) return;
-  state.meetings = Array.isArray(changes.meetingHistory.newValue) ? changes.meetingHistory.newValue : [];
+  if (areaName !== "local") return;
+  if (changes.transcriptDownloadFormat) {
+    transcriptDownloadFormat = normalizeDownloadFormat(changes.transcriptDownloadFormat.newValue);
+    formatVersion++; formatSaveError = ""; refreshDownloadFooters();
+  }
+  if (!changes.meetingHistory && !changes.debugLogging) return;
+  if (changes.debugLogging) debugLogging = changes.debugLogging.newValue === true;
+  if (changes.meetingHistory) state.meetings = Array.isArray(changes.meetingHistory.newValue) ? changes.meetingHistory.newValue : [];
   const selected = state.meetings.find(meeting => meetingId(meeting) === state.selectedMeetingId);
   if (state.selectedMeetingId && !selected) state.selectedMeetingId = null;
   renderAllExceptDetail();
-  renderDetail();
+  if (!selectLinkedMeeting()) renderDetail();
 });
-chrome.storage.local.get({ meetingHistory: [] }, ({ meetingHistory }) => { state.meetings = Array.isArray(meetingHistory) ? meetingHistory : []; renderAllExceptDetail(); renderDetail(); });
 
-// Reconciliation also discovers interrupted sessions missing from meetingHistory.
-try { chrome.runtime.sendMessage({ type: "asterion:recover-storage" }).catch(() => {}); } catch {}
+function selectLinkedMeeting() {
+  if (!linkedSessionId) return false;
+  const meeting = state.meetings.find(item => item.sessionId === linkedSessionId);
+  if (!meeting) return false;
+  openMeetingDetail(meeting);
+  const card = [...meetingsListEl.querySelectorAll(".meeting-card")]
+    .find(card => card.dataset.meetingId === meetingId(meeting));
+  if (card) {
+    card.scrollIntoView?.({ block: "nearest" });
+  }
+  return true;
+}
+
+chrome.storage.local.get({ meetingHistory: [], debugLogging: false, transcriptDownloadFormat: "txt" }, ({ meetingHistory, debugLogging: debugEnabled, transcriptDownloadFormat: savedFormat }) => {
+  transcriptDownloadFormat = normalizeDownloadFormat(savedFormat);
+  debugLogging = debugEnabled === true;
+  state.meetings = Array.isArray(meetingHistory) ? meetingHistory : [];
+  renderAllExceptDetail();
+  if (!selectLinkedMeeting()) renderDetail();
+});
+
+// Keep the requested ID after reconciliation so delayed publication can select it.
+// A missing recording never selects an unrelated one.
+async function reconcileHistory() {
+  try { await chrome.runtime.sendMessage({ type: "asterion:recover-storage" }); } catch {}
+  if (linkedSessionId) {
+    linkedSessionStatus = "not-found";
+    if (!selectLinkedMeeting()) renderDetail();
+  }
+}
+void reconcileHistory();

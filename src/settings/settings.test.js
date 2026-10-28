@@ -2,7 +2,7 @@ import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 vi.mock('../shared/i18n/i18n.js', () => ({ initI18n: async () => ({ t: key => key }) }));
 const html = readFileSync('src/settings/settings.html', 'utf8');
-const defaults = { videoPreset: 'medium', debugLogging: false, minimumMeetingDurationSeconds: 0 };
+const defaults = { videoPreset: 'ultrafast', debugLogging: false, minimumMeetingDurationSeconds: 0 };
 let storage;
 const control = id => document.getElementById(id);
 const change = id => control(id).dispatchEvent(new Event('change', { bubbles: true }));
@@ -20,6 +20,9 @@ it('loads each preference independently and preserves switch identity', async ()
   await mount();
   expect(storage.get).toHaveBeenCalledTimes(3);
   const toggle = control('debug-logging'); const knob = toggle.firstElementChild;
+  expect(toggle.parentElement.contains(control('debug-logging-helper'))).toBe(true);
+  expect(toggle.parentElement.contains(control('debug-logging-label'))).toBe(false);
+  expect(toggle.getAttribute('aria-describedby')).toContain('debug-logging-helper');
   toggle.click(); await tick();
   expect(storage.set).toHaveBeenCalledWith({ debugLogging: true });
   expect(toggle.getAttribute('aria-checked')).toBe('true'); expect(toggle.firstElementChild).toBe(knob);
@@ -31,8 +34,10 @@ it('blocks repeated writes without blocking other preferences and confirms succe
   expect(control('video-preset').disabled).toBe(true); expect(control('debug-logging').disabled).toBe(false);
   expect(status('video-preset').textContent).toBe('settings.saving'); expect(storage.set).toHaveBeenCalledTimes(1);
   finish(); await tick(); expect(control('video-preset').disabled).toBe(false); expect(status('video-preset').textContent).toBe('settings.saved');
+  expect(status('video-preset').classList.contains('is-confirmation')).toBe(true);
   await vi.advanceTimersByTimeAsync(1999); expect(status('video-preset').textContent).toBe('settings.saved');
   await vi.advanceTimersByTimeAsync(1); expect(status('video-preset').textContent).toBe('');
+  expect(status('video-preset').classList.contains('is-confirmation')).toBe(false);
 });
 it('rolls back failed writes and retries the requested value', async () => {
   await mount(); storage.set.mockRejectedValueOnce(new Error('Storage failed'));

@@ -19,7 +19,7 @@ describe("durable conversion scheduling", () => {
   });
   it("counts an interrupted attempt and stops after ten total attempts", async () => {
     vi.useFakeTimers();
-    const attempt = vi.fn().mockRejectedValue(new Error("RUN_TIMEOUT"));
+    const attempt = vi.fn().mockRejectedValue(new Error("Worker execution failed"));
     const queue = new ConversionQueue({ attempt }); const restored = job("restored", { state: "running", attempts: 9 });
     const h = handlers(); await queue.add(restored, h); await vi.advanceTimersByTimeAsync(0);
     expect(restored).toMatchObject({ attempts: 10, state: "failed" });
@@ -36,14 +36,28 @@ describe("durable conversion scheduling", () => {
   });
 });
 
-it("aborts the whole job including preparation and prevents its late publication", async () => {
+it("allows slow preparation without failing or publishing after explicit cancellation", async () => {
   vi.useFakeTimers();
   const h = handlers(); let release;
-  h.input.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+  h.input.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
   const attempt = vi.fn().mockResolvedValue(new Uint8Array([1])), queue = new ConversionQueue({ attempt });
-  const pending = job("late"); await queue.add(pending, h); await vi.advanceTimersByTimeAsync(120000);
-  expect(pending.state).toBe("waiting"); release({ inputs: [new Uint8Array([1])] }); await vi.advanceTimersByTimeAsync(0);
-  expect(h.publish).not.toHaveBeenCalled(); clearTimeout(queue.timer); vi.useRealTimers();
+  const pending = job("late"); await queue.add(pending, h); await vi.advanceTimersByTimeAsync(3 * 3600000);
+  expect(pending.state).toBe("running"); expect(pending.attempts).toBe(1); expect(vi.getTimerCount()).toBe(0);
+  const cancellation = queue.cancelSession("late");
+  release({ inputs: [new Uint8Array([1])] }); await cancellation;
+  expect(attempt).not.toHaveBeenCalled(); expect(h.publish).not.toHaveBeenCalled(); expect(queue.snapshot()).toEqual([]);
+});
+
+it.each(["conversion", "processing"])("lets %s continue past former limits without retries", async kind => {
+  vi.useFakeTimers(); let release;
+  const h = handlers(); const slow = vi.fn(() => new Promise(resolve => { release = resolve; }));
+  if (kind === "processing") h.execute = slow;
+  const queue = new ConversionQueue({ attempt: slow }); const pending = job(kind);
+  await queue.add(pending, h); await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(4 * 3600000);
+  expect(pending.state).toBe("running"); expect(pending.attempts).toBe(1); expect(slow).toHaveBeenCalledOnce(); expect(vi.getTimerCount()).toBe(0);
+  release(new Uint8Array([1])); await vi.advanceTimersByTimeAsync(0);
+  expect(pending.state).toBe("succeeded"); expect(h.finish).toHaveBeenCalledOnce(); expect(queue.snapshot()).toEqual([]);
 });
 
 it("restores terminal jobs whose result metadata was not published without re-encoding", async () => {
